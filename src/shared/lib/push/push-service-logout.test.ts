@@ -47,6 +47,7 @@ interface ServiceInternals {
   matrixClient: unknown;
   fcmToken: string | null;
   voipToken: string | null;
+  voipEnvironment: 'sandbox' | 'production';
 }
 
 async function loadService() {
@@ -54,11 +55,15 @@ async function loadService() {
   return { mod, svc: mod.pushService, internals: mod.pushService as unknown as ServiceInternals };
 }
 
-function signedIn(internals: ServiceInternals, tokens: { fcm?: string; voip?: string } = { fcm: 'fcm-token' }) {
+function signedIn(
+  internals: ServiceInternals,
+  tokens: { fcm?: string; voip?: string; voipEnvironment?: 'sandbox' | 'production' } = { fcm: 'fcm-token' },
+) {
   const client = { setPusher: vi.fn().mockResolvedValue({}) };
   internals.matrixClient = client;
   internals.fcmToken = tokens.fcm ?? null;
   internals.voipToken = tokens.voip ?? null;
+  internals.voipEnvironment = tokens.voipEnvironment ?? 'production';
   return client;
 }
 
@@ -119,6 +124,18 @@ describe('pushService.unregisterForLogout', () => {
     expect(PushNotifications.unregister).not.toHaveBeenCalled();
     // The VoIP pusher may survive an offline logout; native ends its calls.
     expect(PushData.markLoggedOut).toHaveBeenCalledOnce();
+  });
+
+  it('deletes the sandbox VoIP pusher of an Xcode build', async () => {
+    platform.ios = true;
+    const { svc, internals } = await loadService();
+    const client = signedIn(internals, { fcm: 'apns-token', voip: 'voip-token', voipEnvironment: 'sandbox' });
+
+    await svc.unregisterForLogout();
+
+    expect(client.setPusher).toHaveBeenCalledWith(
+      expect.objectContaining({ pushkey: 'voip-token', app_id: 'fortaios.voip.sandbox', kind: null }),
+    );
   });
 
   it('marks the iOS session active when push starts', async () => {

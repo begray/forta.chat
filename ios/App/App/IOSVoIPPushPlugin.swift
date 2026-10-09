@@ -12,7 +12,7 @@ import Foundation
 /// to JS; events raised before load are queued there and flushed on load.
 ///
 /// JS (`push-service.ts`) registers a second Matrix pusher with
-/// `app_id: 'fortaios.voip'` from the token; the CallKit accept/decline
+/// `app_id: 'fortaios.voip'` (or `'fortaios.voip.sandbox'` for an Xcode build) from the token; the CallKit accept/decline
 /// events reach JS through `@capgo/capacitor-incoming-call-kit`'s listeners
 /// and `native-call-bridge.ios.ts`.
 @objc(IOSVoIPPushPlugin)
@@ -23,11 +23,13 @@ public class IOSVoIPPushPlugin: CAPPlugin {
 
     /// Current VoIP token, or `{ token: null }` until iOS has issued one — JS
     /// also subscribes to `voipTokenReceived` for the first issue and rotations.
+    /// `environment` is the token's APNs server (see `ApsEnvironment`).
     @objc func getToken(_ call: CAPPluginCall) {
+        let environment = ApsEnvironment.current
         if let token = VoIPPushCoordinator.shared.tokenHex {
-            call.resolve(["token": token])
+            call.resolve(["token": token, "environment": environment])
         } else {
-            call.resolve(["token": NSNull()])
+            call.resolve(["token": NSNull(), "environment": environment])
         }
     }
 }

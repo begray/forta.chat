@@ -3,6 +3,7 @@ import {
   PUSHER_APP_ID_ANDROID,
   PUSHER_APP_ID_IOS,
   PUSHER_APP_ID_IOS_VOIP,
+  PUSHER_APP_ID_IOS_VOIP_SANDBOX,
   buildPusherPayload,
   buildVoipPusherPayload,
   isLegacyPusherEntry,
@@ -115,6 +116,14 @@ describe('buildVoipPusherPayload (iOS PushKit)', () => {
     // m.room.message events through PushKit (Apple-forbidden) or
     // m.call.invite events through normal APNs (no CallKit ringer).
     expect(payload.app_id).not.toBe(PUSHER_APP_ID_IOS);
+  });
+
+  // A build installed from Xcode gets sandbox PushKit tokens, which only the
+  // APNs sandbox accepts; Sygnal reaches it through a separate pushkin.
+  it('uses fortaios.voip.sandbox for a sandbox token and fortaios.voip otherwise', () => {
+    expect(buildVoipPusherPayload('t', 'sandbox').app_id).toBe(PUSHER_APP_ID_IOS_VOIP_SANDBOX);
+    expect(PUSHER_APP_ID_IOS_VOIP_SANDBOX).toBe('fortaios.voip.sandbox');
+    expect(buildVoipPusherPayload('t', 'production').app_id).toBe('fortaios.voip');
   });
 
   it('uses the VoIP token verbatim as pushkey (PKPushCredentials.token, NOT the regular APNs/FCM token)', () => {

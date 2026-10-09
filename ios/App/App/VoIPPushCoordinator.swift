@@ -28,6 +28,33 @@ enum PushSession {
     static func shouldRing(_ state: String?) -> Bool { state != loggedOut }
 }
 
+/// The APNs server this build's push tokens belong to, as JS names it:
+/// "sandbox" for a build installed from Xcode, "production" for TestFlight and
+/// the App Store. Sygnal has one VoIP pushkin per server, so JS registers the
+/// VoIP pusher under the matching app_id. Read from the `aps-environment`
+/// entitlement in the embedded provisioning profile, which a Release build run
+/// from Xcode also has as "development" (`#if DEBUG` would miss it). App Store
+/// builds carry no profile: production.
+enum ApsEnvironment {
+    static let current: String = read()
+
+    private static func read() -> String {
+        guard
+            let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+            let data = try? Data(contentsOf: url),
+            // The profile is a signed CMS blob; the plist inside is plain text.
+            let text = String(data: data, encoding: .isoLatin1),
+            let start = text.range(of: "<?xml"),
+            let end = text.range(of: "</plist>", range: start.upperBound..<text.endIndex),
+            let plistData = String(text[start.lowerBound..<end.upperBound]).data(using: .isoLatin1),
+            let plist = try? PropertyListSerialization.propertyList(from: plistData, format: nil) as? [String: Any],
+            let entitlements = plist["Entitlements"] as? [String: Any],
+            let aps = entitlements["aps-environment"] as? String
+        else { return "production" }
+        return aps == "development" ? "sandbox" : "production"
+    }
+}
+
 /// The "Incoming calls" switch JS last reported (forta-bugs#1388). Off, a VoIP
 /// push is reported and ended at once like a signed-out one, so Bastyon and
 /// the account's other devices keep ringing. No value yet: calls ring.
@@ -125,7 +152,7 @@ final class VoIPPushCoordinator: NSObject, PKPushRegistryDelegate {
         guard type == .voIP else { return }
         let token = pushCredentials.token.map { String(format: "%02x", $0) }.joined()
         tokenHex = token
-        emit("voipTokenReceived", ["token": token])
+        emit("voipTokenReceived", ["token": token, "environment": ApsEnvironment.current])
     }
 
     func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {

@@ -30,8 +30,17 @@ export interface IOSVoIPPushReceivedPayload {
   hasVideo: boolean;
 }
 
+/**
+ * The APNs server a VoIP token belongs to: `sandbox` for a build installed
+ * from Xcode (development provisioning), `production` for TestFlight and the
+ * App Store. Sygnal has one VoIP pushkin per server, so the pusher app_id
+ * follows it. Absent from older native builds: read it as `production`.
+ */
+export type ApsEnvironment = 'sandbox' | 'production';
+
 export interface IOSVoIPTokenPayload {
   token: string;
+  environment?: ApsEnvironment;
 }
 
 export interface IOSVoIPPushPlugin {
@@ -41,7 +50,7 @@ export interface IOSVoIPPushPlugin {
    * subscribe to `voipTokenReceived` to be notified when the token
    * first arrives or is rotated.
    */
-  getToken(): Promise<{ token: string | null }>;
+  getToken(): Promise<{ token: string | null; environment?: ApsEnvironment }>;
   addListener(
     event: 'voipTokenReceived',
     cb: (data: IOSVoIPTokenPayload) => void,
