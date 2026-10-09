@@ -178,6 +178,31 @@ class PushDataPlugin : Plugin() {
         call.resolve()
     }
 
+    /**
+     * JS registered the pusher for `token`: pushes from other Firebase projects
+     * are dropped from now on (see [PushSenderPolicy]). Resolves the token of an
+     * older pusher of this device that JS should remove, or null.
+     */
+    @PluginMethod
+    fun onPusherRegistered(call: PluginCall) {
+        val token = call.getString("token") ?: run {
+            call.reject("token is required"); return
+        }
+        val result = JSObject()
+        PushTokenStore.markRegistered(context, token)?.let { result.put("legacyToken", it) }
+        call.resolve(result)
+    }
+
+    /** JS removed the pusher of the legacy `token`. */
+    @PluginMethod
+    fun clearLegacyFcmToken(call: PluginCall) {
+        val token = call.getString("token") ?: run {
+            call.reject("token is required"); return
+        }
+        PushTokenStore.clearLegacy(context, token)
+        call.resolve()
+    }
+
     /** The "Incoming calls" switch (see IncomingCallsStore). */
     @PluginMethod
     fun setIncomingCallsEnabled(call: PluginCall) {

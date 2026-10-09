@@ -30,6 +30,8 @@ vi.mock('./push-data-plugin', () => ({
     replaceNotificationContent: vi.fn().mockResolvedValue(undefined),
     getPendingIntent: vi.fn().mockResolvedValue({}),
     addListener: vi.fn().mockResolvedValue({ remove: vi.fn() }),
+    onPusherRegistered: vi.fn().mockResolvedValue({}),
+    clearLegacyFcmToken: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -111,6 +113,69 @@ describe('PushService.registerPusher retry behaviour', () => {
       getPushers: vi.fn().mockRejectedValue(new Error('cleanup failed')),
     };
     await expect(callRegisterPusher(client)).resolves.toBeUndefined();
+    expect(client.setPusher).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('push_pusher_dead_letter')).toBeNull();
+  });
+});
+
+// The move to the `fortachat` Firebase project left the device's old pusher
+// (app_id fortaandroid, old token) on the homeserver next to the new one, and
+// every message rang twice.
+describe('PushService.registerPusher legacy pusher removal', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  async function register(client: { setPusher: ReturnType<typeof vi.fn>; getPushers: ReturnType<typeof vi.fn> }) {
+    const mod = await import('./push-service');
+    const svc = mod.pushService as unknown as {
+      registerPusher: (c: typeof client, t: string) => Promise<void>;
+    };
+    return svc.registerPusher(client, 'new-token');
+  }
+
+  it('removes the old-project pusher of this device once the new one is registered', async () => {
+    const { PushData } = await import('./push-data-plugin');
+    vi.mocked(PushData.onPusherRegistered).mockResolvedValueOnce({ legacyToken: 'old-token' });
+    const oldPusher = { app_id: 'fortaandroid', pushkey: 'old-token', kind: 'http' };
+    const otherDevice = { app_id: 'fortaandroid', pushkey: 'other-device', kind: 'http' };
+    const client = {
+      setPusher: vi.fn().mockResolvedValue(undefined),
+      getPushers: vi.fn().mockResolvedValue({ pushers: [oldPusher, otherDevice] }),
+    };
+
+    await register(client);
+
+    expect(PushData.onPusherRegistered).toHaveBeenCalledWith({ token: 'new-token' });
+    expect(client.setPusher).toHaveBeenNthCalledWith(1, expect.objectContaining({ app_id: 'fortaandroid2', pushkey: 'new-token' }));
+    expect(client.setPusher).toHaveBeenCalledWith({ ...oldPusher, kind: null });
+    expect(client.setPusher).not.toHaveBeenCalledWith(expect.objectContaining({ pushkey: 'other-device', kind: null }));
+    expect(PushData.clearLegacyFcmToken).toHaveBeenCalledWith({ token: 'old-token' });
+  });
+
+  it('keeps the legacy token for the next boot when the removal fails', async () => {
+    const { PushData } = await import('./push-data-plugin');
+    vi.mocked(PushData.onPusherRegistered).mockResolvedValueOnce({ legacyToken: 'old-token' });
+    vi.mocked(PushData.clearLegacyFcmToken).mockClear();
+    const client = {
+      setPusher: vi.fn().mockResolvedValue(undefined),
+      getPushers: vi.fn().mockRejectedValue(new Error('offline')),
+    };
+
+    await expect(register(client)).resolves.toBeUndefined();
+    expect(PushData.clearLegacyFcmToken).not.toHaveBeenCalled();
+  });
+
+  it('still registers when native lacks onPusherRegistered', async () => {
+    const { PushData } = await import('./push-data-plugin');
+    vi.mocked(PushData.onPusherRegistered).mockRejectedValueOnce(new Error('UNIMPLEMENTED'));
+    const client = {
+      setPusher: vi.fn().mockResolvedValue(undefined),
+      getPushers: vi.fn().mockResolvedValue({ pushers: [] }),
+    };
+
+    await register(client);
+
     expect(client.setPusher).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('push_pusher_dead_letter')).toBeNull();
   });

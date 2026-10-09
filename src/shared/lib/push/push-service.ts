@@ -28,17 +28,22 @@ import { interopLog } from '@/shared/lib/interop';
  * pushkeys is scoped to the device's own `app_id` so iOS does not delete
  * Android's pusher and vice versa.
  *
+ * The `2` suffix is the Firebase project: `fortaandroid2`/`fortaios2` go
+ * through `fortachat` (2026-10). The old `fortaandroid` pusher stays on the
+ * homeserver for installs that have not updated; an updated device removes its
+ * own (see {@link isLegacyPusherEntry}).
+ *
  * iOS uses TWO pushers in parallel:
- *   - `fortaios`     → regular APNs (FCM token) for non-call notifications.
+ *   - `fortaios2`    → regular APNs (FCM token) for non-call notifications.
  *   - `fortaios.voip` → APNs VoIP class (PushKit token) for `m.call.invite`
  *                      events only. Apple guidelines forbid using PushKit
  *                      for anything else, so Sygnal is configured to route
  *                      only `msg_type == m.call.invite[.video]` to this
  *                      pusher (see SYGNAL-CONFIG-REQUEST.md).
  */
-export const PUSHER_APP_ID_IOS = 'fortaios';
+export const PUSHER_APP_ID_IOS = 'fortaios2';
 export const PUSHER_APP_ID_IOS_VOIP = 'fortaios.voip';
-export const PUSHER_APP_ID_ANDROID = 'fortaandroid';
+export const PUSHER_APP_ID_ANDROID = 'fortaandroid2';
 const SYGNAL_PUSH_URL = 'https://matrix.pocketnet.app/_matrix/push/v1/notify';
 
 export interface PusherPayload {
@@ -54,7 +59,7 @@ export interface PusherPayload {
 /**
  * Build the per-platform pusher payload. Pure function — exported for unit
  * tests. iOS flows through Firebase iOS SDK → APNs (Apple delivers via Sygnal
- * with `app_id: fortaios`). Android flows through FCM directly.
+ * with `app_id: fortaios2`). Android flows through FCM directly.
  */
 export function buildPusherPayload(token: string, opts: { isIOS: boolean }): PusherPayload {
   return {
@@ -103,6 +108,21 @@ export function isStalePusherEntry(
   currentToken: string,
 ): boolean {
   return p.app_id === currentAppId && p.pushkey !== currentToken;
+}
+
+/**
+ * Whether a pusher entry is this device's own older pusher: the one native
+ * reported for the FCM token it replaced, under any app_id. Moving to a new
+ * Firebase project changes both the token and the app_id (`fortaandroid` →
+ * `fortaandroid2`), so {@link isStalePusherEntry} never matches it, and left
+ * alone it doubles every push.
+ */
+export function isLegacyPusherEntry(
+  p: { pushkey?: string },
+  legacyToken: string | null,
+  currentToken: string,
+): boolean {
+  return !!legacyToken && legacyToken !== currentToken && p.pushkey === legacyToken;
 }
 
 /**
@@ -270,13 +290,15 @@ class PushService {
         }
         // Pusher is live — best-effort stale cleanup is a separate concern;
         // its failure must not invalidate the successful registration above.
+        const legacyToken = await this.confirmPusherRegistered(token);
         try {
           const { pushers } = await matrixClient.getPushers();
           for (const p of pushers) {
-            if (isStalePusherEntry(p, payload.app_id, token)) {
+            if (isStalePusherEntry(p, payload.app_id, token) || isLegacyPusherEntry(p, legacyToken, token)) {
               await matrixClient.setPusher({ ...p, kind: null });
             }
           }
+          if (legacyToken) await PushData.clearLegacyFcmToken({ token: legacyToken });
         } catch (pe) {
           console.warn('[PushService] Could not clean stale pushers:', pe);
         }
@@ -309,6 +331,23 @@ class PushService {
       );
     } catch {
       /* localStorage may be unavailable in degraded WebViews — non-fatal */
+    }
+  }
+
+  /**
+   * Android: tell native the pusher for `token` is live, so it starts dropping
+   * pushes from the old Firebase project, and get back the token of this
+   * device's older pusher to remove. Null on iOS, with no older pusher, or when
+   * native lacks the method.
+   */
+  private async confirmPusherRegistered(token: string): Promise<string | null> {
+    if (isIOS) return null;
+    try {
+      const { legacyToken } = await PushData.onPusherRegistered({ token });
+      return legacyToken ?? null;
+    } catch (e) {
+      console.warn('[PushService] onPusherRegistered failed:', e);
+      return null;
     }
   }
 

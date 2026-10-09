@@ -19,7 +19,7 @@ import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
  *     pre-warming the Matrix client before the user accepts.
  *
  * Used by `push-service.ts` to register a SECOND Matrix pusher with
- * `app_id: 'fortaios.voip'`, separate from the regular `'fortaios'`
+ * `app_id: 'fortaios.voip'`, separate from the regular `'fortaios2'`
  * pusher that handles non-call notifications. See Step 6 / Sygnal config
  * request doc for the homeserver-side configuration.
  */

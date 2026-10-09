@@ -94,7 +94,7 @@ describe('pushService.unregisterForLogout', () => {
     await svc.unregisterForLogout();
 
     expect(client.setPusher).toHaveBeenCalledWith(
-      expect.objectContaining({ pushkey: 'fcm-token', app_id: 'fortaandroid', kind: null }),
+      expect.objectContaining({ pushkey: 'fcm-token', app_id: 'fortaandroid2', kind: null }),
     );
     expect(PushNotifications.unregister).toHaveBeenCalledOnce();
     expect(PushNotifications.removeAllListeners).toHaveBeenCalled();
@@ -111,7 +111,7 @@ describe('pushService.unregisterForLogout', () => {
     await svc.unregisterForLogout();
 
     expect(client.setPusher).toHaveBeenCalledWith(
-      expect.objectContaining({ pushkey: 'apns-token', app_id: 'fortaios', kind: null }),
+      expect.objectContaining({ pushkey: 'apns-token', app_id: 'fortaios2', kind: null }),
     );
     expect(client.setPusher).toHaveBeenCalledWith(
       expect.objectContaining({ pushkey: 'voip-token', app_id: 'fortaios.voip', kind: null }),

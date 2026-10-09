@@ -58,6 +58,12 @@ interface PushDataPlugin extends Plugin {
    *  push and iOS reports each VoIP push to CallKit and ends it at once, even
    *  one from a pusher the logout could not remove. */
   markLoggedOut(): Promise<void>;
+  /** Android: the pusher for `token` is registered. From now on the FCM service
+   *  drops pushes from other Firebase projects (PushSenderPolicy). Resolves the
+   *  token of this device's older pusher to remove; absent when there is none. */
+  onPusherRegistered(options: { token: string }): Promise<{ legacyToken?: string }>;
+  /** Android: the pusher of the legacy `token` is removed. */
+  clearLegacyFcmToken(options: { token: string }): Promise<void>;
   /** "Incoming calls" switch: off, a call push neither rings nor shows (see incoming-calls-setting). */
   setIncomingCallsEnabled(options: { enabled: boolean }): Promise<void>;
   addListener(event: 'pushReceived', handler: (data: PushPayload) => void): Promise<PluginListenerHandle>;
