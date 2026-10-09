@@ -54,6 +54,14 @@ vi.mock("@/features/messaging/model/use-audio-playback", () => ({
   interruptVoicePlayback: () => interruptVoicePlayback(),
 }));
 
+vi.mock("@/entities/user/model", () => ({
+  useUserStore: () => ({ getUser: () => ({ image: "https://x/peer.png" }) }),
+}));
+const mediaSessionInfo = vi.fn();
+vi.mock("@/features/messaging/model/use-voice-media-session", () => ({
+  useVoiceMediaSession: (info: { value: unknown }) => mediaSessionInfo(info),
+}));
+
 const inCall = ref(false);
 vi.mock("@/entities/call", () => ({
   useCallStore: () => ({ get isInCall() { return inCall.value; } }),
@@ -151,5 +159,13 @@ describe("VoicePlayerBar", () => {
     inCall.value = false;
     await w.vm.$nextTick();
     expect(interruptVoicePlayback).toHaveBeenCalledTimes(1);
+  });
+
+  it("feeds the Media Session with sender, chat and avatar", () => {
+    state.value = "playing";
+    current.value = META;
+    mount(VoicePlayerBar);
+    const info = mediaSessionInfo.mock.calls[0][0] as { value: unknown };
+    expect(info.value).toEqual({ title: "name:peer", artist: "Team", artworkUrl: "https://x/peer.png" });
   });
 });

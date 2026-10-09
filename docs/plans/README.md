@@ -17,7 +17,7 @@ Commands inside plans (e.g. `npm run lint`, old paths like `com/bastyon/chat`, `
 
 | Plan | State | What is open |
 |---|---|---|
-| [2026-10-08-background-voice-playback](2026-10-08-background-voice-playback.md) | stages 0–4 done (stage 0: plan defaults) | 5 (Media Session), 6 (Android FGS), 7 (iOS audio session), 8 |
+| [2026-10-08-background-voice-playback](2026-10-08-background-voice-playback.md) | stages 0–5 done (stage 0: plan defaults) | 6 (Android FGS; device prototype first), 7 (iOS audio session; check stage 5 lock screen first), 8 |
 | [2026-10-02-decrypt-priority-roadmap](2026-10-02-decrypt-priority-roadmap.md) | stages 0–3, 5 done | 4 (decrypt only visible bubbles on open), 6 (partly), 7 (`fullRoomRefresh` 35 s) |
 | [2026-10-03-initial-sync-lazy-members](2026-10-03-initial-sync-lazy-members.md) | phase I done (`5ff01d6d`), phase II cancelled | slow first `/sync`: stage 1A (proxy timeout, server side), response composition, variant D |
 | [2026-08-29-registration-actions-sdk-migration](2026-08-29-registration-actions-sdk-migration.md) | not started | everything (tracks A and B) |

@@ -344,6 +344,19 @@ describe("useAudioPlayback", () => {
       expect(lastAudio).toBe(first);
     });
 
+    it("playNext (system next-track) skips to the next voice of the chain", async () => {
+      mockFindNextVoice.mockResolvedValue(nextMessage);
+      mockFetchVoiceUrl.mockResolvedValue("blob:next");
+      await playback.play(baseInfo);
+
+      playback.playNext();
+      await flush();
+
+      expect(mockPause).toHaveBeenCalled();
+      expect(playback.currentMessageId.value).toBe("msg-2");
+      expect(playback.state.value).toBe("playing");
+    });
+
     it("logout reset stops playback and forgets the session listened marks", async () => {
       await playback.play({ ...baseInfo, messageId: "lo", listenedId: "$lo" });
       expect(playback.wasListened("$lo")).toBe(true);

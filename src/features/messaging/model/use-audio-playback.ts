@@ -494,6 +494,19 @@ export function useAudioPlayback() {
     }
   }
 
+  /** Skip to the next voice of the chain, as if the current one ended (the
+   *  system "next track" control). The current one stays listened. */
+  function playNext() {
+    const meta = current.value;
+    if (!meta || !audio.value) return;
+    if (state.value !== "playing" && state.value !== "paused") return;
+    playGeneration++;
+    audio.value.pause();
+    state.value = "ended";
+    currentTime.value = 0;
+    void advanceFrom(meta, playGeneration);
+  }
+
   function togglePlay(info: PlaybackInfo) {
     if (currentMessageId.value === info.messageId && state.value === "playing") {
       pause();
@@ -541,6 +554,6 @@ export function useAudioPlayback() {
   return {
     state, current, currentMessageId, currentRoomId, currentTime, duration, playbackRate, progress,
     isActive, isPlaying, wasListened,
-    play, pause, resume, togglePlay, seek, seekByRatio, skipForward, skipBackward, cycleSpeed, stop,
+    play, pause, resume, playNext, togglePlay, seek, seekByRatio, skipForward, skipBackward, cycleSpeed, stop,
   };
 }

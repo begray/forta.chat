@@ -7,6 +7,8 @@ import { useAiChatStore } from "@/entities/ai-chat";
 import { useAudioPlayback, interruptVoicePlayback } from "@/features/messaging/model/use-audio-playback";
 import { useCallStore } from "@/entities/call";
 import { requestScrollToMessage } from "@/features/messaging/model/pending-scroll";
+import { useVoiceMediaSession } from "@/features/messaging/model/use-voice-media-session";
+import { useUserStore } from "@/entities/user/model";
 import { useSidebarTab } from "@/widgets/sidebar/model/use-sidebar-tab";
 
 const { t } = useI18n();
@@ -47,6 +49,19 @@ const roomName = computed(() => {
 });
 
 const isPlaying = computed(() => playback.state.value === "playing");
+
+const userStore = useUserStore();
+
+// Media keys, the system overlay and the iOS lock screen.
+useVoiceMediaSession(computed(() => {
+  const current = meta.value;
+  if (!current) return null;
+  return {
+    title: senderName.value,
+    artist: roomName.value || t("message.voiceMessage"),
+    artworkUrl: userStore.getUser(current.senderId)?.image || undefined,
+  };
+}));
 
 const togglePause = () => {
   if (isPlaying.value) playback.pause();
