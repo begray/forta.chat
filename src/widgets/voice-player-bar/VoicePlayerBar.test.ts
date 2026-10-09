@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mount, enableAutoUnmount } from "@vue/test-utils";
 import { ref, shallowRef } from "vue";
 
 vi.mock("@/shared/lib/i18n", () => ({
@@ -48,8 +48,15 @@ const playback = {
   stop: vi.fn(),
   cycleSpeed: vi.fn(),
 };
+const interruptVoicePlayback = vi.fn();
 vi.mock("@/features/messaging/model/use-audio-playback", () => ({
   useAudioPlayback: () => playback,
+  interruptVoicePlayback: () => interruptVoicePlayback(),
+}));
+
+const inCall = ref(false);
+vi.mock("@/entities/call", () => ({
+  useCallStore: () => ({ get isInCall() { return inCall.value; } }),
 }));
 
 const { pendingScroll, takePendingScroll } = await import("@/features/messaging/model/pending-scroll");
@@ -57,12 +64,15 @@ const { default: VoicePlayerBar } = await import("./VoicePlayerBar.vue");
 
 const META = { messageId: "cli_1", roomId: "!r:s", listenedId: "$ev1", timestamp: 1, senderId: "peer" };
 
+enableAutoUnmount(afterEach);
+
 describe("VoicePlayerBar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.value = "idle";
     current.value = null;
     routeName.value = "ChatPage";
+    inCall.value = false;
     takePendingScroll("!r:s");
   });
 
@@ -128,5 +138,18 @@ describe("VoicePlayerBar", () => {
     const w = mount(VoicePlayerBar);
     await w.find('[data-testid="voice-player-open"]').trigger("click");
     expect(routerPush).toHaveBeenCalledWith({ name: "ChatPage" });
+  });
+
+  it("a call start interrupts the voice (no resume after it)", async () => {
+    state.value = "playing";
+    current.value = META;
+    const w = mount(VoicePlayerBar);
+    inCall.value = true;
+    await w.vm.$nextTick();
+    expect(interruptVoicePlayback).toHaveBeenCalledTimes(1);
+
+    inCall.value = false;
+    await w.vm.$nextTick();
+    expect(interruptVoicePlayback).toHaveBeenCalledTimes(1);
   });
 });

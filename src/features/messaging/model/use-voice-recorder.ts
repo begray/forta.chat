@@ -5,6 +5,7 @@ import { useBugReport } from "@/features/bug-report";
 import { tRaw } from "@/shared/lib/i18n";
 import { classifyMicError, sendDiag, SendError } from "./send-errors";
 import { reportSendError } from "./send-error-bus";
+import { interruptVoicePlayback } from "./use-audio-playback";
 
 export type RecorderState = "idle" | "recording" | "locked" | "preview";
 
@@ -38,6 +39,8 @@ export function useVoiceRecorder() {
   };
 
   const startRecording = async () => {
+    // The mic must not record the voice message playing out of the speaker.
+    interruptVoicePlayback();
     try {
       sendDiag("voice:start");
       const t0 = Date.now();

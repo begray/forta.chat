@@ -99,7 +99,12 @@ vi.stubGlobal("AudioContext", vi.fn(function MockAudioContext(this: Record<strin
 }));
 
 // Import AFTER mocks are set up
-import { useAudioPlayback, checkCodecSupport, resetAudioPlaybackForLogout } from "./use-audio-playback";
+import {
+  useAudioPlayback,
+  checkCodecSupport,
+  resetAudioPlaybackForLogout,
+  interruptVoicePlayback,
+} from "./use-audio-playback";
 
 const baseInfo = {
   messageId: "msg-1",
@@ -389,6 +394,77 @@ describe("useAudioPlayback", () => {
       mockCancelPrefetch.mockClear();
       playback.stop();
       expect(mockCancelPrefetch).toHaveBeenCalled();
+    });
+  });
+
+  describe("other sound sources", () => {
+    it("interrupt pauses a playing voice and does not resume it", async () => {
+      await playback.play(baseInfo);
+      interruptVoicePlayback();
+      expect(playback.state.value).toBe("paused");
+      expect(mockPause).toHaveBeenCalled();
+    });
+
+    it("interrupt stops a voice that is still loading", async () => {
+      mockPlay.mockReturnValueOnce(new Promise(() => {}));
+      void playback.play(baseInfo);
+      expect(playback.state.value).toBe("loading");
+      interruptVoicePlayback();
+      expect(playback.state.value).toBe("idle");
+    });
+
+    it("interrupt between two chained voices cancels the advance", async () => {
+      let resolveNext: (m: unknown) => void = () => {};
+      mockFindNextVoice.mockReturnValue(new Promise((r) => { resolveNext = r; }));
+      mockFetchVoiceUrl.mockResolvedValue("blob:next");
+      await playback.play(baseInfo);
+      (lastAudio.onended as () => void)();
+
+      interruptVoicePlayback();
+      resolveNext({ id: "$msg-2", _key: "msg-2", roomId: "room-1", senderId: "peer", timestamp: 2000 });
+      await flush();
+      expect(playback.state.value).toBe("idle");
+    });
+
+    it("an audible page video starting playback pauses the voice", async () => {
+      await playback.play(baseInfo);
+      const video = document.createElement("video");
+      document.body.appendChild(video);
+      video.dispatchEvent(new Event("play"));
+      expect(playback.state.value).toBe("paused");
+      video.remove();
+    });
+
+    it("unmuting a playing video circle pauses the voice", async () => {
+      await playback.play(baseInfo);
+      const video = document.createElement("video");
+      video.muted = true;
+      Object.defineProperty(video, "paused", { configurable: true, get: () => false });
+      document.body.appendChild(video);
+      video.muted = false;
+      video.dispatchEvent(new Event("volumechange"));
+      expect(playback.state.value).toBe("paused");
+      video.remove();
+    });
+
+    it("unmuting a paused video does not pause the voice", async () => {
+      await playback.play(baseInfo);
+      const video = document.createElement("video");
+      Object.defineProperty(video, "paused", { configurable: true, get: () => true });
+      document.body.appendChild(video);
+      video.dispatchEvent(new Event("volumechange"));
+      expect(playback.state.value).toBe("playing");
+      video.remove();
+    });
+
+    it("a muted autoplay video does not pause the voice", async () => {
+      await playback.play(baseInfo);
+      const video = document.createElement("video");
+      video.muted = true;
+      document.body.appendChild(video);
+      video.dispatchEvent(new Event("play"));
+      expect(playback.state.value).toBe("playing");
+      video.remove();
     });
   });
 

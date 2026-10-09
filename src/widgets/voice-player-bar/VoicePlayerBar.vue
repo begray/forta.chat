@@ -4,7 +4,8 @@ import { useChatStore } from "@/entities/chat";
 import { useResolvedRoomName } from "@/entities/chat/lib/use-resolved-room-name";
 import { useChannelStore } from "@/entities/channel";
 import { useAiChatStore } from "@/entities/ai-chat";
-import { useAudioPlayback } from "@/features/messaging/model/use-audio-playback";
+import { useAudioPlayback, interruptVoicePlayback } from "@/features/messaging/model/use-audio-playback";
+import { useCallStore } from "@/entities/call";
 import { requestScrollToMessage } from "@/features/messaging/model/pending-scroll";
 import { useSidebarTab } from "@/widgets/sidebar/model/use-sidebar-tab";
 
@@ -16,6 +17,14 @@ const aiChatStore = useAiChatStore();
 const { resolve: resolveRoomName } = useResolvedRoomName();
 const { closeSettingsContent, setTab } = useSidebarTab();
 const playback = useAudioPlayback();
+const callStore = useCallStore();
+
+// A call takes over the audio (and on iOS the AVAudioSession): pause the
+// voice, no resume after the call. The bar lives for the whole signed-in
+// session, so it is the one place that sees every call start.
+watch(() => callStore.isInCall, (inCall) => {
+  if (inCall) interruptVoicePlayback();
+});
 
 // Shown on every screen while a voice is loading, playing or paused — the
 // voice keeps playing after the user leaves its chat. "ended" is the gap while

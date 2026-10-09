@@ -6,6 +6,7 @@ import { stripMentionAddresses, stripBastyonLinks } from "@/shared/lib/message-f
 import { getDraft, saveDraft, clearDraft } from "@/shared/lib/drafts";
 import { useMessages } from "../model/use-messages";
 import { useLinkPreview } from "../model/use-link-preview";
+import { interruptVoicePlayback } from "../model/use-audio-playback";
 import { useI18n } from "@/shared/lib/i18n";
 import { useToast } from "@/shared/lib/use-toast";
 import { useMediaUpload } from "../model/use-media-upload";
@@ -714,7 +715,7 @@ watch(() => voiceRecorder.recordedBlob.value, (blob) => {
 const togglePreviewPlay = () => {
   if (!previewAudio.value) return;
   if (isPreviewPlaying.value) { previewAudio.value.pause(); isPreviewPlaying.value = false; }
-  else { previewAudio.value.play(); isPreviewPlaying.value = true; }
+  else { interruptVoicePlayback(); previewAudio.value.play(); isPreviewPlaying.value = true; }
 };
 
 // Video preview

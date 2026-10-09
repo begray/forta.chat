@@ -1,5 +1,11 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const interruptVoicePlayback = vi.fn();
+vi.mock("./use-audio-playback", () => ({
+  interruptVoicePlayback: () => interruptVoicePlayback(),
+}));
+
 import { useVoiceRecorder } from "./use-voice-recorder";
 
 describe("useVoiceRecorder — getUserMedia constraints", () => {
@@ -44,5 +50,24 @@ describe("useVoiceRecorder — getUserMedia constraints", () => {
     await recorder.startRecording();
     const constraints = gumSpy.mock.calls[0][0] as { audio: { noiseSuppression: boolean } };
     expect(constraints.audio.noiseSuppression).toBe(true);
+  });
+});
+
+describe("useVoiceRecorder — voice playback", () => {
+  it("interrupts the playing voice before the mic opens", async () => {
+    const order: string[] = [];
+    interruptVoicePlayback.mockImplementation(() => order.push("interrupt"));
+    Object.defineProperty(global.navigator, "mediaDevices", {
+      writable: true,
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => {
+          order.push("gum");
+          return { getAudioTracks: () => [], getTracks: () => [] };
+        }),
+      },
+    });
+    await useVoiceRecorder().startRecording();
+    expect(order.slice(0, 2)).toEqual(["interrupt", "gum"]);
   });
 });

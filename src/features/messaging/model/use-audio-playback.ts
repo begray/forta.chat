@@ -335,6 +335,38 @@ async function advanceFrom(meta: PlaybackMeta, generation: number) {
   await useAudioPlayback().play(playbackInfoFromMessage(next, url, next.fileInfo?.duration ?? 0));
 }
 
+/** Another sound source starts (a recording, a preview, a video, a call):
+ *  pause the voice, with no auto-resume. A voice still loading, or between
+ *  two voices of the chain, is stopped instead — its pending play() would
+ *  start the sound anyway. */
+export function interruptVoicePlayback(): void {
+  if (state.value === "playing" && audio.value) {
+    audio.value.pause();
+    state.value = "paused";
+  } else if (state.value === "loading" || state.value === "ended") {
+    playGeneration++;
+    cleanup();
+  }
+}
+
+// Any page media element that becomes audible interrupts the voice: it starts
+// playing unmuted (MediaViewer, post and feed players, call media), or it is
+// already playing muted and gets unmuted (video circles autoplay muted and
+// unmute on tap, without a new `play`). Media events do not bubble, hence the
+// capture phase. The voice's own element lives outside the DOM; detached
+// previews call interruptVoicePlayback() themselves.
+if (typeof document !== "undefined") {
+  const onMediaEvent = (e: Event) => {
+    const el = e.target;
+    if (typeof HTMLMediaElement === "undefined" || !(el instanceof HTMLMediaElement)) return;
+    if (el === audio.value || el.muted || el.volume === 0) return;
+    if (e.type === "volumechange" && el.paused) return;
+    interruptVoicePlayback();
+  };
+  document.addEventListener("play", onMediaEvent, true);
+  document.addEventListener("volumechange", onMediaEvent, true);
+}
+
 /** Logout: stop the voice and forget this account's session listened marks,
  *  so the next account's bubbles do not inherit them. */
 export function resetAudioPlaybackForLogout() {
