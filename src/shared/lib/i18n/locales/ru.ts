@@ -411,6 +411,11 @@ export const ru: Record<TranslationKey, string> = {
   "voice.slideCancel": "Сдвиньте для отмены",
   "voice.hintVideo": "Нажмите для видео, удерживайте чтобы записать",
   "voice.hintAudio": "Нажмите для аудио, удерживайте чтобы записать",
+  // ── Голосовой мини-плеер ──
+  "voicePlayer.play": "Воспроизвести",
+  "voicePlayer.pause": "Пауза",
+  "voicePlayer.close": "Закрыть плеер",
+  "voicePlayer.openMessage": "Перейти к сообщению",
 
   // ── Chat search ──
   "chatSearch.placeholder": "Поиск в чате...",

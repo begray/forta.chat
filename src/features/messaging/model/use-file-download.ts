@@ -75,6 +75,10 @@ interface FileDownloadState {
  *  cached objectUrl and rerun fetch + decrypt with a fresh URL. */
 export interface DownloadOpts {
   forceRefetch?: boolean;
+  /** Background fetch nobody asked for (voice prefetch / auto-advance): on
+   *  failure only log and record the state — no toast, no bug-report modal
+   *  popping up on whatever screen is open. */
+  silent?: boolean;
 }
 
 /** Errors that mean "this ciphertext cannot be decrypted with the keys we
@@ -363,7 +367,54 @@ function clearInstanceUrls(keys: Iterable<string>) {
   }
 }
 
-/** Revoke all cached blob URLs and clear the cache */
+/** Keys whose URL must outlive chat switches and consumer unmounts: the voice
+ *  message that is playing and the one prefetched after it. Ref-counted, since
+ *  the player and the prefetch may pin the same key. */
+const pinnedKeys = new Map<string, number>();
+
+/** Room the user has open, as last reported by `revokeFileUrlsOutsideRoom`.
+ *  `unpinFileUrl` frees a URL right away when its chat is no longer open. */
+let openRoomId: string | null = null;
+
+function revokeCachedKey(key: string) {
+  const url = cache.get(key);
+  if (url) {
+    try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+  }
+  cache.delete(key);
+  cacheRoomIds.delete(key);
+}
+
+/** Keep `key`'s blob URL alive across chat switches and consumer unmounts
+ *  until the matching `unpinFileUrl`. */
+export function pinFileUrl(key: string) {
+  pinnedKeys.set(key, (pinnedKeys.get(key) ?? 0) + 1);
+}
+
+/** Release a pin. When the last pin goes and nothing would keep the URL
+ *  otherwise (its chat is closed, or no consumer is mounted), revoke it now —
+ *  no later chat switch would sweep it. */
+export function unpinFileUrl(key: string) {
+  const count = pinnedKeys.get(key);
+  if (count === undefined) return;
+  if (count > 1) {
+    pinnedKeys.set(key, count - 1);
+    return;
+  }
+  pinnedKeys.delete(key);
+  if (!cache.has(key)) return;
+  if (liveConsumers > 0 && cacheRoomIds.get(key) === openRoomId) return;
+  revokeCachedKey(key);
+  clearInstanceUrls([key]);
+}
+
+/** TEST-ONLY: number of pinned keys. */
+export function _pinnedKeyCountForTests(): number {
+  return pinnedKeys.size;
+}
+
+/** Revoke all cached blob URLs and clear the cache, pinned ones included
+ *  (logout). */
 export function revokeAllFileUrls() {
   const revoked = new Set(cache.keys());
   for (const url of cache.values()) {
@@ -371,22 +422,34 @@ export function revokeAllFileUrls() {
   }
   cache.clear();
   cacheRoomIds.clear();
+  pinnedKeys.clear();
+  clearInstanceUrls(revoked);
+}
+
+/** Revoke every cached blob URL except pinned ones. */
+function revokeUnpinnedFileUrls() {
+  const revoked = new Set<string>();
+  for (const key of [...cache.keys()]) {
+    if (pinnedKeys.has(key)) continue;
+    revokeCachedKey(key);
+    revoked.add(key);
+  }
   clearInstanceUrls(revoked);
 }
 
 /** Revoke every cached blob URL that does not belong to `roomId` (pass null to
- *  revoke everything). Called on chat switch: the decrypted bytes of the chat
+ *  revoke everything); pinned keys survive. Called on chat switch: the decrypted bytes of the chat
  *  we just left would otherwise pin RAM for the rest of the session, since the
  *  cache is only freed when the last `useFileDownload()` consumer unmounts.
  *  The persistent media cache still holds the bytes, so reopening that chat
  *  re-mints the URLs without a network round-trip. */
 export function revokeFileUrlsOutsideRoom(roomId: string | null) {
+  openRoomId = roomId;
   const revoked = new Set<string>();
-  for (const [key, url] of cache) {
+  for (const key of [...cache.keys()]) {
     if (roomId !== null && cacheRoomIds.get(key) === roomId) continue;
-    try { URL.revokeObjectURL(url); } catch { /* ignore */ }
-    cache.delete(key);
-    cacheRoomIds.delete(key);
+    if (pinnedKeys.has(key)) continue;
+    revokeCachedKey(key);
     revoked.add(key);
   }
   clearInstanceUrls(revoked);
@@ -892,7 +955,7 @@ export function useFileDownload() {
     onScopeDispose(() => {
       liveStateMaps.delete(states);
       liveConsumers = Math.max(0, liveConsumers - 1);
-      if (liveConsumers === 0) revokeAllFileUrls();
+      if (liveConsumers === 0) revokeUnpinnedFileUrls();
     });
   }
 
@@ -1109,6 +1172,7 @@ export function useFileDownload() {
       // media-gone vs. keys-still-syncing) instead of just an in-bubble
       // retry button. Deduped per (cacheKey, errorKey) so background
       // re-attempts during the same glitch do not spam.
+      if (opts.silent) return null;
       surfaceTypedErrorToast(e, cacheKey);
       // Skip auto-report for crypto failures (user-actionable, not a bug) and
       // for duplicates within the dedup window. Manual reporting is still

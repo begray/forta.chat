@@ -234,6 +234,34 @@ describe("useFileDownload — auto bug-report blacklist & dedup", () => {
     expect(bugReportOpen).toHaveBeenCalledTimes(1);
   });
 
+  it("silent download (voice prefetch / auto-advance) never opens a bug report", async () => {
+    global.fetch = vi.fn(() => Promise.reject(new Error("QuotaExceeded"))) as unknown as Mock;
+
+    const scope = effectScope();
+    await scope.run(async () => {
+      const { download, getState } = useFileDownload();
+      const msg = makeMessage({
+        id: "$evt-silent",
+        _key: "client-silent",
+        fileInfo: {
+          name: "x.ogg",
+          type: "audio/ogg",
+          size: 1,
+          url: "https://example.com/x.ogg",
+          secrets: { keys: "x", block: 1, v: 1 },
+        },
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await runWithFakeTimers(() => download(msg as any, undefined, { silent: true }));
+      expect(result).toBeNull();
+      // The failure is still recorded for the bubble's retry UI.
+      expect(getState("client-silent").error).toBeTruthy();
+    });
+    scope.stop();
+
+    expect(bugReportOpen).not.toHaveBeenCalled();
+  });
+
   // ── MissingUrlError (Session 57) ─────────────────────────────────────
   // Encrypted attachments without a usable mxc url used to throw a generic
   // `Error("No file URL")` that auto-opened the bug-report modal — overwhelming

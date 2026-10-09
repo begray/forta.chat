@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { useChatStore, MessageType } from "@/entities/chat";
+import { useChatStore } from "@/entities/chat";
 import { useAuthStore } from "@/entities/auth";
-import { useAudioPlayback } from "@/features/messaging/model/use-audio-playback";
 import { useFileDownload, revokeFileUrlsOutsideRoom } from "@/features/messaging/model/use-file-download";
 import { getChatDb, isChatDbReady, useLiveQuery, type CallProvider } from "@/shared/lib/local-db";
 import { ChannelView } from "@/features/channels";
@@ -97,41 +96,10 @@ const isEmptyState = computed(() =>
   !chatStore.activeRoom && !isRoomLoading.value,
 );
 
-// --- Auto-chain playback for voice messages ---
-const playback = useAudioPlayback();
-const fileDownload = useFileDownload();
-
-playback.setOnEnded(async (endedMessageId: string, roomId: string) => {
-  const messages = chatStore.activeMessages;
-  const voiceMessages = messages.filter((m) => m.type === MessageType.audio);
-  const endedIdx = voiceMessages.findIndex((m) => (m._key || m.id) === endedMessageId);
-  if (endedIdx === -1) return;
-
-  const db = getChatDb();
-  // Look for the next unlistened voice message after the one that just ended
-  for (let i = endedIdx + 1; i < voiceMessages.length; i++) {
-    const next = voiceMessages[i];
-    if (next.roomId !== roomId) continue;
-    const listened = await db.listened.isListened(next.id);
-    if (listened) continue;
-
-    // Found next unlistened voice message — download if needed and play
-    if (!next.fileInfo) break;
-    let objectUrl = fileDownload.getState(next._key || next.id).objectUrl;
-    if (!objectUrl) {
-      objectUrl = (await fileDownload.download(next)) ?? null;
-    }
-    if (!objectUrl) break;
-
-    playback.play({
-      messageId: next._key || next.id,
-      roomId: next.roomId,
-      objectUrl,
-      duration: next.fileInfo.duration ?? 0,
-    });
-    return;
-  }
-});
+// Anchors the shared blob-URL cache while the chat surface is mounted: the
+// cache is freed when its last useFileDownload() consumer goes away.
+// Voice auto-advance lives in the player (use-audio-playback / voice-queue).
+useFileDownload();
 
 watch(() => chatStore.activeRoomId, (roomId) => {
   if (roomId) {
@@ -140,20 +108,14 @@ watch(() => chatStore.activeRoomId, (roomId) => {
   }
 });
 
-// Stop audio when switching rooms — prevents invisible playback
-// where audio continues but VoiceMessage UI is unmounted
-watch(() => chatStore.activeRoomId, (_newId, oldId) => {
-  if (oldId && playback.currentRoomId.value === oldId) {
-    playback.stop();
-  }
-});
-
 // Free the decrypted media of the chat being left. The shared blob-URL cache
 // is otherwise only cleared when the last useFileDownload() consumer unmounts,
 // which on a long session means every photo ever opened stays pinned in RAM.
+// Immediate: the file cache must know the open chat from mount on, or the
+// player's unpin would treat it as closed and revoke a visible voice's URL.
 watch(() => chatStore.activeRoomId, (roomId) => {
   revokeFileUrlsOutsideRoom(roomId);
-});
+}, { immediate: true });
 
 const peerKeysMissing = computed(() => {
   const roomId = chatStore.activeRoomId;

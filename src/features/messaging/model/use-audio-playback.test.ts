@@ -21,6 +21,32 @@ vi.mock("@/shared/lib/i18n", () => ({
   tRaw: (k: string) => k,
 }));
 
+// Blob-URL pinning lives in the file-download module (heavy imports).
+const mockPinFileUrl = vi.fn();
+const mockUnpinFileUrl = vi.fn();
+vi.mock("./use-file-download", () => ({
+  pinFileUrl: (key: string) => mockPinFileUrl(key),
+  unpinFileUrl: (key: string) => mockUnpinFileUrl(key),
+}));
+
+// Auto-advance queue (Dexie + downloads) and the listened store.
+const mockFindNextVoice = vi.fn();
+const mockFetchVoiceUrl = vi.fn();
+const mockPrefetchNextVoice = vi.fn();
+const mockCancelPrefetch = vi.fn();
+vi.mock("./voice-queue", () => ({
+  findNextVoice: (...a: unknown[]) => mockFindNextVoice(...a),
+  fetchVoiceUrl: (...a: unknown[]) => mockFetchVoiceUrl(...a),
+  prefetchNextVoice: (...a: unknown[]) => mockPrefetchNextVoice(...a),
+  cancelPrefetch: () => mockCancelPrefetch(),
+}));
+
+const mockMarkListened = vi.fn(() => Promise.resolve());
+vi.mock("@/shared/lib/local-db", () => ({
+  isChatDbReady: () => true,
+  getChatDb: () => ({ listened: { markListened: mockMarkListened } }),
+}));
+
 // --- Mock Audio (must use regular function for `new` operator) ---
 const mockPlay = vi.fn(() => Promise.resolve());
 const mockPause = vi.fn();
@@ -73,14 +99,20 @@ vi.stubGlobal("AudioContext", vi.fn(function MockAudioContext(this: Record<strin
 }));
 
 // Import AFTER mocks are set up
-import { useAudioPlayback, checkCodecSupport } from "./use-audio-playback";
+import { useAudioPlayback, checkCodecSupport, resetAudioPlaybackForLogout } from "./use-audio-playback";
 
 const baseInfo = {
   messageId: "msg-1",
   roomId: "room-1",
   objectUrl: "blob:http://localhost/abc",
   duration: 10,
+  listenedId: "$msg-1",
+  timestamp: 1000,
+  senderId: "peer",
 };
+
+/** Let the auto-advance chain (awaits on mocked promises) settle. */
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe("useAudioPlayback", () => {
   let playback: ReturnType<typeof useAudioPlayback>;
@@ -236,16 +268,138 @@ describe("useAudioPlayback", () => {
     });
   });
 
-  describe("setOnEnded()", () => {
-    it("should call callback when audio ends", async () => {
-      const cb = vi.fn();
-      playback.setOnEnded(cb);
+  describe("auto-advance (voice queue)", () => {
+    const nextMessage = {
+      id: "$msg-2",
+      _key: "msg-2",
+      roomId: "room-1",
+      senderId: "peer",
+      timestamp: 2000,
+      fileInfo: { duration: 7 },
+    };
 
+    beforeEach(() => {
+      mockFindNextVoice.mockReset();
+      mockFetchVoiceUrl.mockReset();
+      mockPrefetchNextVoice.mockClear();
+      mockMarkListened.mockClear();
+    });
+
+    it("plays the next voice of the same chat when the current one ends", async () => {
+      mockFindNextVoice.mockResolvedValue(nextMessage);
+      mockFetchVoiceUrl.mockResolvedValue("blob:next");
       await playback.play(baseInfo);
-      const onended = lastAudio.onended as (() => void) | null;
-      onended?.();
 
-      expect(cb).toHaveBeenCalledWith("msg-1", "room-1");
+      (lastAudio.onended as () => void)();
+      await flush();
+
+      expect(mockFindNextVoice).toHaveBeenCalledWith({ roomId: "room-1", timestamp: 1000, id: "$msg-1" });
+      expect(playback.currentMessageId.value).toBe("msg-2");
+      expect(playback.state.value).toBe("playing");
+      expect(playback.current.value).toMatchObject({ listenedId: "$msg-2", timestamp: 2000 });
+      expect(lastAudio.src).toBe("blob:next");
+    });
+
+    it("pins the next file before releasing the prefetch pin that holds it", async () => {
+      mockFindNextVoice.mockResolvedValue(nextMessage);
+      mockFetchVoiceUrl.mockResolvedValue("blob:next");
+      await playback.play(baseInfo);
+      mockPinFileUrl.mockClear();
+      mockCancelPrefetch.mockClear();
+
+      (lastAudio.onended as () => void)();
+      await flush();
+
+      const pinOrder = mockPinFileUrl.mock.invocationCallOrder[0];
+      const cancelOrder = mockCancelPrefetch.mock.invocationCallOrder[0];
+      expect(mockPinFileUrl).toHaveBeenCalledWith("msg-2");
+      expect(pinOrder).toBeLessThan(cancelOrder);
+    });
+
+    it("a replay of the ended voice wins over a pending auto-advance", async () => {
+      let resolveNext: (m: unknown) => void = () => {};
+      mockFindNextVoice.mockReturnValue(new Promise((r) => { resolveNext = r; }));
+      mockFetchVoiceUrl.mockResolvedValue("blob:next");
+      await playback.play(baseInfo);
+      const first = lastAudio;
+      (first.onended as () => void)();
+
+      // Replay the same voice; its play() is still pending while the
+      // advance resolves (state still reads "ended").
+      let finishReplay: () => void = () => {};
+      mockPlay.mockReturnValueOnce(new Promise<void>((r) => { finishReplay = r; }));
+      const replay = playback.play(baseInfo);
+      resolveNext(nextMessage);
+      await flush();
+      finishReplay();
+      await replay;
+
+      expect(playback.currentMessageId.value).toBe("msg-1");
+      expect(playback.state.value).toBe("playing");
+      expect(lastAudio).toBe(first);
+    });
+
+    it("logout reset stops playback and forgets the session listened marks", async () => {
+      await playback.play({ ...baseInfo, messageId: "lo", listenedId: "$lo" });
+      expect(playback.wasListened("$lo")).toBe(true);
+      resetAudioPlaybackForLogout();
+      expect(playback.state.value).toBe("idle");
+      expect(playback.wasListened("$lo")).toBe(false);
+    });
+
+    it("goes idle at the end of the chain", async () => {
+      mockFindNextVoice.mockResolvedValue(null);
+      await playback.play(baseInfo);
+
+      (lastAudio.onended as () => void)();
+      await flush();
+
+      expect(playback.state.value).toBe("idle");
+      expect(playback.current.value).toBeNull();
+    });
+
+    it("does not advance when the user picked another voice meanwhile", async () => {
+      let resolveNext: (m: unknown) => void = () => {};
+      mockFindNextVoice.mockReturnValue(new Promise((r) => { resolveNext = r; }));
+      mockFetchVoiceUrl.mockResolvedValue("blob:next");
+      await playback.play(baseInfo);
+      (lastAudio.onended as () => void)();
+
+      await playback.play({ ...baseInfo, messageId: "msg-9", listenedId: "$msg-9" });
+      resolveNext(nextMessage);
+      await flush();
+
+      expect(playback.currentMessageId.value).toBe("msg-9");
+    });
+
+    it("marks the voice listened when it starts playing, with no bubble involved", async () => {
+      expect(playback.wasListened("$fresh")).toBe(false);
+      await playback.play({ ...baseInfo, messageId: "fresh", listenedId: "$fresh" });
+      expect(mockMarkListened).toHaveBeenCalledWith("$fresh");
+      expect(playback.wasListened("$fresh")).toBe(true);
+    });
+
+    it("prefetches the next voice once playback starts", async () => {
+      await playback.play(baseInfo);
+      expect(mockPrefetchNextVoice).toHaveBeenCalledWith({ roomId: "room-1", timestamp: 1000, id: "$msg-1" });
+    });
+
+    it("cancels the prefetch on stop", async () => {
+      await playback.play(baseInfo);
+      mockCancelPrefetch.mockClear();
+      playback.stop();
+      expect(mockCancelPrefetch).toHaveBeenCalled();
+    });
+  });
+
+  describe("playback speed", () => {
+    it("remembers the chosen speed in localStorage", async () => {
+      playback.playbackRate.value = 1;
+      playback.cycleSpeed();
+      expect(localStorage.getItem("forta-voice-playback-rate")).toBe("1.5");
+      playback.cycleSpeed();
+      playback.cycleSpeed();
+      expect(localStorage.getItem("forta-voice-playback-rate")).toBe("1");
     });
   });
 
@@ -307,15 +461,36 @@ describe("useAudioPlayback", () => {
       expect(mockRemoveAttribute).toHaveBeenCalledWith("src");
     });
 
-    it("should not trigger onEnded callback after stop", async () => {
-      const cb = vi.fn();
-      playback.setOnEnded(cb);
-
+    it("does not auto-advance after stop", async () => {
+      mockFindNextVoice.mockClear();
       await playback.play(baseInfo);
       playback.stop();
+      await flush();
 
-      // After stop, audio element is nulled — onended can't fire
-      expect(cb).not.toHaveBeenCalled();
+      expect(mockFindNextVoice).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("blob URL pinning", () => {
+    it("pins the playing file and unpins it on stop", async () => {
+      mockPinFileUrl.mockClear();
+      mockUnpinFileUrl.mockClear();
+      await playback.play(baseInfo);
+      expect(mockPinFileUrl).toHaveBeenCalledWith("msg-1");
+      expect(mockUnpinFileUrl).not.toHaveBeenCalled();
+
+      playback.stop();
+      expect(mockUnpinFileUrl).toHaveBeenCalledWith("msg-1");
+    });
+
+    it("moves the pin when another message starts", async () => {
+      await playback.play(baseInfo);
+      mockPinFileUrl.mockClear();
+      mockUnpinFileUrl.mockClear();
+
+      await playback.play({ ...baseInfo, messageId: "msg-2" });
+      expect(mockUnpinFileUrl).toHaveBeenCalledWith("msg-1");
+      expect(mockPinFileUrl).toHaveBeenCalledWith("msg-2");
     });
   });
 

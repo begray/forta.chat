@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch } from "vue";
 import type { Message } from "@/entities/chat";
 import { MessageStatus } from "@/entities/chat/model/types";
 import { useFileDownload, invalidateDownloadCache } from "../model/use-file-download";
-import { useAudioPlayback } from "../model/use-audio-playback";
+import { useAudioPlayback, playbackInfoFromMessage } from "../model/use-audio-playback";
 import { getChatDb } from "@/shared/lib/local-db";
 
 interface Props {
@@ -24,7 +24,10 @@ const stableId = computed(() => props.message._key || props.message.id);
 const active = computed(() => playback.isActive(stableId.value).value);
 const playing = computed(() => playback.isPlaying(stableId.value).value);
 
-const hasListened = ref(false);
+// The player writes the mark (it may play this voice with no bubble mounted);
+// the bubble reads Dexie once and the player's session set live.
+const listenedInDb = ref(false);
+const hasListened = computed(() => listenedInDb.value || playback.wasListened(props.message.id));
 
 // For pending messages with a local blob URL, seed the download cache directly
 // instead of fetching through the download pipeline.
@@ -43,7 +46,7 @@ onMounted(async () => {
     }
   }
   try {
-    hasListened.value = await getChatDb().listened.isListened(props.message.id);
+    listenedInDb.value = await getChatDb().listened.isListened(props.message.id);
   } catch { /* DB not ready — treat as not listened */ }
 });
 
@@ -63,14 +66,6 @@ watch(
     }
   },
 );
-
-// Mark as listened when playback starts for this message
-watch(playing, (isPlaying) => {
-  if (isPlaying && !hasListened.value) {
-    hasListened.value = true;
-    getChatDb().listened.markListened(props.message.id).catch(() => {});
-  }
-});
 
 // Prefer stored metadata duration; fall back to audio element duration once loaded
 const totalDuration = computed(() => {
@@ -178,12 +173,7 @@ const handleTogglePlay = async () => {
   }
 
   // Synchronous call — no await between click event and .play()
-  playback.togglePlay({
-    messageId: stableId.value,
-    roomId: props.message.roomId,
-    objectUrl: url,
-    duration: totalDuration.value,
-  });
+  playback.togglePlay(playbackInfoFromMessage(props.message, url, totalDuration.value));
 
   // Generate waveform in background (non-blocking)
   generateWaveform(url);

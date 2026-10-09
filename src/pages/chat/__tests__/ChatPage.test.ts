@@ -119,9 +119,10 @@ vi.mock("@/shared/lib/composables/use-android-back-handler", () => ({
 
 import { useAndroidBackHandler } from "@/shared/lib/composables/use-android-back-handler";
 
+const playbackStopSpy = vi.hoisted(() => vi.fn());
 vi.mock("@/features/messaging/model/use-audio-playback", () => ({
   useAudioPlayback: () => ({
-    stop: vi.fn(),
+    stop: playbackStopSpy,
     play: vi.fn(),
   }),
 }));
@@ -538,5 +539,20 @@ describe("ChatPage Android back handler — chat-tab-to-chats", () => {
     expect(setTabSpy).not.toHaveBeenCalled();
 
     wrapper.unmount();
+  });
+});
+
+describe("ChatPage — voice playback outlives the page", () => {
+  it("does not stop the voice player on unmount (leaving for profile, settings…)", async () => {
+    fakeActiveRoomId.value = "!abc:matrix.org";
+    fakeRooms.value = [{ id: "!abc:matrix.org", name: "Abc" }];
+    fakeRoomsInitialized.value = true;
+    playbackStopSpy.mockClear();
+
+    const wrapper = mount(ChatPage, mountOpts);
+    await flushPromises();
+    wrapper.unmount();
+
+    expect(playbackStopSpy).not.toHaveBeenCalled();
   });
 });

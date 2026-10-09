@@ -1668,6 +1668,12 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
       destroyCallTabLock();
     }).catch(() => { /* ignore */ });
 
+    // Stop the voice player before its pinned blob URL is revoked below —
+    // playback no longer stops on chat switch, only on logout.
+    import("@/features/messaging/model/use-audio-playback").then(({ resetAudioPlaybackForLogout }) => {
+      resetAudioPlaybackForLogout();
+    }).catch(() => { /* ignore */ });
+
     import("@/features/messaging/model/use-file-download").then(({ revokeAllFileUrls }) => {
       revokeAllFileUrls();
     }).catch(() => { /* ignore */ });

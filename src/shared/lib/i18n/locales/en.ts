@@ -409,6 +409,11 @@ export const en = {
   "voice.slideCancel": "Slide to cancel",
   "voice.hintVideo": "Tap for video, hold to record",
   "voice.hintAudio": "Tap for audio, hold to record",
+  // ── Voice mini-player ──
+  "voicePlayer.play": "Play",
+  "voicePlayer.pause": "Pause",
+  "voicePlayer.close": "Close player",
+  "voicePlayer.openMessage": "Go to message",
 
   // ── Chat search ──
   "chatSearch.placeholder": "Search in chat...",

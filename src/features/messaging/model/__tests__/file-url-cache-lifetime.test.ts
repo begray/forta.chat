@@ -75,9 +75,14 @@ global.fetch = vi.fn(() =>
   }),
 ) as unknown as Mock;
 
-const { useFileDownload, revokeAllFileUrls, revokeFileUrlsOutsideRoom } = await import(
-  "../use-file-download"
-);
+const {
+  useFileDownload,
+  revokeAllFileUrls,
+  revokeFileUrlsOutsideRoom,
+  pinFileUrl,
+  unpinFileUrl,
+  _pinnedKeyCountForTests,
+} = await import("../use-file-download");
 
 const makeMessage = (id: string, roomId: string) =>
   ({
@@ -251,6 +256,96 @@ describe("file URL cache lifetime", () => {
   });
 });
 
+describe("pinned URLs (voice playback outlives the chat)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    revokeAllFileUrls();
+    revokeFileUrlsOutsideRoom(null);
+  });
+
+  it("a pinned URL survives the chat switch and the last consumer leaving", async () => {
+    const voice = makeMessage("voice_pin", "!a:server");
+    const bubble = await openConsumer((api) => api.download(voice));
+    const url = bubble.result as string;
+    pinFileUrl("voice_pin");
+
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
+    revokeFileUrlsOutsideRoom("!b:server");
+    bubble.scope.stop();
+
+    expect(revokeSpy).not.toHaveBeenCalledWith(url);
+    const fresh = await openConsumer(() => undefined);
+    expect(fresh.api.getState("voice_pin").objectUrl).toBe(url);
+
+    fresh.scope.stop();
+    unpinFileUrl("voice_pin");
+    revokeSpy.mockRestore();
+  });
+
+  it("unpin revokes at once when the file's chat is no longer open", async () => {
+    const voice = makeMessage("voice_left", "!a:server");
+    const consumer = await openConsumer((api) => api.download(voice));
+    const url = consumer.result as string;
+    pinFileUrl("voice_left");
+    revokeFileUrlsOutsideRoom("!b:server");
+
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
+    unpinFileUrl("voice_left");
+
+    expect(revokeSpy).toHaveBeenCalledWith(url);
+    expect(consumer.api.getState("voice_left").objectUrl).toBeNull();
+    consumer.scope.stop();
+    revokeSpy.mockRestore();
+  });
+
+  it("unpin keeps the URL while its chat is open", async () => {
+    const voice = makeMessage("voice_here", "!a:server");
+    revokeFileUrlsOutsideRoom("!a:server");
+    const consumer = await openConsumer((api) => api.download(voice));
+    const url = consumer.result as string;
+    pinFileUrl("voice_here");
+
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
+    unpinFileUrl("voice_here");
+
+    expect(revokeSpy).not.toHaveBeenCalled();
+    expect(consumer.api.getState("voice_here").objectUrl).toBe(url);
+    consumer.scope.stop();
+    revokeSpy.mockRestore();
+  });
+
+  it("pins are ref-counted: the URL lives until the last unpin", async () => {
+    const voice = makeMessage("voice_twice", "!a:server");
+    const consumer = await openConsumer((api) => api.download(voice));
+    const url = consumer.result as string;
+    pinFileUrl("voice_twice");
+    pinFileUrl("voice_twice");
+    revokeFileUrlsOutsideRoom("!b:server");
+
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
+    unpinFileUrl("voice_twice");
+    expect(revokeSpy).not.toHaveBeenCalled();
+    unpinFileUrl("voice_twice");
+    expect(revokeSpy).toHaveBeenCalledWith(url);
+    consumer.scope.stop();
+    revokeSpy.mockRestore();
+  });
+
+  it("revokeAllFileUrls (logout) revokes pinned URLs and drops the pins", async () => {
+    const voice = makeMessage("voice_logout", "!a:server");
+    const consumer = await openConsumer((api) => api.download(voice));
+    pinFileUrl("voice_logout");
+
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
+    revokeAllFileUrls();
+
+    expect(revokeSpy).toHaveBeenCalledWith(consumer.result);
+    expect(_pinnedKeyCountForTests()).toBe(0);
+    consumer.scope.stop();
+    revokeSpy.mockRestore();
+  });
+});
+
 describe("chat switch wiring", () => {
   // Mounting ChatWindow pulls in the whole chat surface (Matrix client, calls,
   // wallet, live queries), so the one-line wiring is asserted at source level.
@@ -265,6 +360,12 @@ describe("chat switch wiring", () => {
     );
     expect(source).toMatch(
       /watch\(\(\) => chatStore\.activeRoomId,[\s\S]{0,200}?revokeFileUrlsOutsideRoom\(/,
+    );
+  });
+
+  it("reports the open chat from mount on (immediate), so unpin never revokes a visible voice", () => {
+    expect(source).toMatch(
+      /watch\(\(\) => chatStore\.activeRoomId, \(roomId\) => \{\s*revokeFileUrlsOutsideRoom\(roomId\);\s*\}, \{ immediate: true \}\)/,
     );
   });
 });
