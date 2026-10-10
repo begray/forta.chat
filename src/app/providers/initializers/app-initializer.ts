@@ -3,7 +3,11 @@ import type { UserData } from "./types";
 import { PocketnetInstanceConfigurator } from "../chat-scripts";
 import { PocketnetInstance } from "../chat-scripts/config/pocketnetinstance";
 import { withTimeout } from "@/shared/lib/with-timeout";
-import { loadArchivedPeertubeServers, setArchivedPeertubeServers } from "@/shared/lib/image-url";
+import {
+  hasFreshArchivedPeertubeServers,
+  loadArchivedPeertubeServers,
+  setArchivedPeertubeServers,
+} from "@/shared/lib/image-url";
 import { PROXY_NODES } from "@/shared/config/constants";
 import { toBastyonCollectionData, type BastyonCollectionData } from "@/shared/lib/bastyon-collection";
 import {
@@ -182,6 +186,8 @@ type OnLoadUserData = (userData: UserData) => void;
  *  indefinitely. A 15s bound converts that hang into a surfaced error so the
  *  caller can rotate to another proxy / show retry UX (WEE-23). */
 const REGISTRATION_RPC_TIMEOUT = 15_000;
+/** Bound for each step of the archived peertube hosts load (ping, SDK call). */
+const PEERTUBE_SERVERS_TIMEOUT = 10_000;
 
 /** Window for coalescing per-post getpagescores requests into one batched call. */
 const SCORE_BATCH_WINDOW_MS = 50;
@@ -319,22 +325,37 @@ export class AppInitializer {
   }
 
   /** Archived peertube hosts (image URL rewriting). Asked from the proxy that
-   *  answered the ping; without the Bastyon Api, straight from the first proxy. */
+   *  answered the ping; without the Bastyon Api, or when that path fails or
+   *  stalls, straight from the first proxy. Every step is bounded: a hung ping
+   *  or SDK call used to leave the cached promise pending forever, so avatars
+   *  on archived hosts never got rewritten and no retry ever ran. A stored list
+   *  younger than the TTL skips the request; on failure the stored list stays. */
   loadArchivedPeertubeServers(): Promise<void> {
     if (this.peertubeServersPromise) return this.peertubeServersPromise;
-    const load = (async () => {
-      const ready = await this.whenApiReady().catch(() => false);
-      const viaApi = ready && this.api
-        ? await this.api.api.peertubeserversList().catch(() => null)
-        : null;
+    if (hasFreshArchivedPeertubeServers()) return Promise.resolve();
+    const load: Promise<void> = (async (): Promise<boolean> => {
+      let viaApi: string[] | null | undefined = null;
+      try {
+        const ready = await withTimeout(this.whenApiReady(), PEERTUBE_SERVERS_TIMEOUT, "proxy ping");
+        // The list lives on the pinged proxy, not on Api itself (as in pocketnet).
+        const proxy = ready && this.api ? this.api.get.current() : undefined;
+        if (proxy) {
+          viaApi = await withTimeout(proxy.api.peertubeserversList(), PEERTUBE_SERVERS_TIMEOUT, "peertubeserversList");
+        }
+      } catch (e) {
+        console.warn("[appInit] peertubeserversList via Api failed, asking the proxy directly:", e);
+      }
       if (Array.isArray(viaApi) && viaApi.length > 0) {
         setArchivedPeertubeServers(viaApi);
-        return;
+        console.info(`[appInit] Loaded ${viaApi.length} archived peertube servers`);
+        return true;
       }
       const servers = await loadArchivedPeertubeServers(`https://${PROXY_NODES[0].host}:${PROXY_NODES[0].port}`);
+      return servers.length > 0;
+    })().then((loaded) => {
       // Nothing loaded: let the next fetchUserInfo retry ask again.
-      if (servers.length === 0) this.peertubeServersPromise = null;
-    })();
+      if (!loaded && this.peertubeServersPromise === load) this.peertubeServersPromise = null;
+    });
     this.peertubeServersPromise = load;
     return load;
   }

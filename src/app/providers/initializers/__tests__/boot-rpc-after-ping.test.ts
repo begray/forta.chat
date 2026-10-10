@@ -18,7 +18,9 @@ vi.mock("../../chat-scripts/config/pocketnetinstance", () => ({
 
 const setArchived = vi.fn();
 const loadArchivedDirect = vi.fn(async () => [] as string[]);
+const hasFresh = vi.fn(() => false);
 vi.mock("@/shared/lib/image-url", () => ({
+  hasFreshArchivedPeertubeServers: () => hasFresh(),
   setArchivedPeertubeServers: (s: string[]) => setArchived(s),
   loadArchivedPeertubeServers: () => loadArchivedDirect(),
 }));
@@ -42,11 +44,13 @@ function withFakeApi(opts: { ready?: boolean } = {}) {
       if (method === "getnodeinfo") return { time: 1_000_000, lastblock: { height: 777 } };
       return {};
     }),
-    api: { peertubeserversList: vi.fn(async () => ["old.peertube.example"]) },
   };
+  // Real api.js: the list is on the pinged proxy (api.get.current().api), Api has no `api`.
+  const proxyApi = { peertubeserversList: vi.fn(async (): Promise<string[]> => ["old.peertube.example"]) };
+  Object.assign(api, { get: { current: vi.fn(() => ({ api: proxyApi })) } });
   const actions = { prepare: vi.fn(), addAccount: vi.fn() };
   Object.assign(init as unknown as Record<string, unknown>, { api, actions, _available: true });
-  return { init, api, actions, ping };
+  return { init, api, actions, ping, proxyApi };
 }
 
 const flush = async () => {
@@ -122,16 +126,16 @@ describe("AppInitializer boot RPCs", () => {
   });
 
   it("asks the pinged proxy for archived peertube hosts, once", async () => {
-    const { init, api, ping } = withFakeApi();
+    const { init, ping, proxyApi } = withFakeApi();
     const first = init.loadArchivedPeertubeServers();
     await flush();
-    expect(api.api.peertubeserversList).not.toHaveBeenCalled();
+    expect(proxyApi.peertubeserversList).not.toHaveBeenCalled();
 
     ping.resolve();
     await first;
     await init.loadArchivedPeertubeServers();
 
-    expect(api.api.peertubeserversList).toHaveBeenCalledTimes(1);
+    expect(proxyApi.peertubeserversList).toHaveBeenCalledTimes(1);
     expect(setArchived).toHaveBeenCalledWith(["old.peertube.example"]);
     expect(loadArchivedDirect).not.toHaveBeenCalled();
   });
@@ -140,6 +144,60 @@ describe("AppInitializer boot RPCs", () => {
     const init = createAppInitializer();
     await init.loadArchivedPeertubeServers();
     expect(loadArchivedDirect).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the request while the stored list is fresh", async () => {
+    const { init, ping, proxyApi } = withFakeApi();
+    hasFresh.mockReturnValueOnce(true);
+    ping.resolve();
+    await init.loadArchivedPeertubeServers();
+    expect(proxyApi.peertubeserversList).not.toHaveBeenCalled();
+    expect(loadArchivedDirect).not.toHaveBeenCalled();
+  });
+
+  it("asks the proxy directly when the ping picked no proxy", async () => {
+    const { init, api, ping } = withFakeApi();
+    (api as unknown as { get: { current: () => undefined } }).get.current = () => undefined;
+    ping.resolve();
+    await init.loadArchivedPeertubeServers();
+    expect(loadArchivedDirect).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks the proxy directly when the ping never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const { init, proxyApi } = withFakeApi();
+      loadArchivedDirect.mockResolvedValueOnce(["old.peertube.example"]);
+      const pending = init.loadArchivedPeertubeServers();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await pending;
+      expect(proxyApi.peertubeserversList).not.toHaveBeenCalled();
+      expect(loadArchivedDirect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks the proxy directly when the SDK call hangs, and retries when that finds nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      const { init, ping, proxyApi } = withFakeApi();
+      proxyApi.peertubeserversList.mockImplementation(() => new Promise<string[]>(() => {}));
+      ping.resolve();
+      const pending = init.loadArchivedPeertubeServers();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await pending;
+      expect(loadArchivedDirect).toHaveBeenCalledTimes(1);
+      expect(setArchived).not.toHaveBeenCalled();
+
+      // Empty result is not cached: the next call asks again.
+      const again = init.loadArchivedPeertubeServers();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await again;
+      expect(loadArchivedDirect).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("getSubscribesChannels waits for the ping", async () => {

@@ -77,8 +77,11 @@ const hasImage = computed(() => !!props.src && !imgError.value);
          RecycleScroller recycles the row under a new src). Image covers
          initials once it paints. -->
     <span class="font-medium text-white">{{ initials }}</span>
+    <!-- Keyed by src: a reused <img> keeps painting the previous row's picture
+         until the new one loads (or fails), so a recycled row flashed a stranger's avatar. -->
     <img
       v-if="hasImage"
+      :key="fixedSrc"
       :src="fixedSrc"
       :alt="props.name"
       class="absolute inset-0 h-full w-full object-cover"

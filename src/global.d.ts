@@ -163,6 +163,9 @@ declare var Api: new (instance: PocketnetInstanceType) => {
     proxywithwalletls(): Promise<any>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     byid(id: string): any;
+    /** The proxy the ping picked (undefined before it). Its `api` holds the
+     *  proxy endpoints; the peertube list is memoized inside api.js. */
+    current(): { api: { peertubeserversList(): Promise<string[] | null | undefined> } } | undefined;
     /** Resolve the active proxy WSS endpoint. Returns either:
      *  - `{ url, proxy }` with `url = "wss://host:port"` for a real network proxy, or
      *  - `{ dummy, proxy }` when running against the in-process direct proxy
@@ -175,8 +178,6 @@ declare var Api: new (instance: PocketnetInstanceType) => {
   };
   wait: { ready(type: string, timeout: number): Promise<void> };
   ready: { use: boolean };
-  /** Proxy endpoints; the list is memoized inside api.js. */
-  api: { peertubeserversList(): Promise<string[] | null | undefined> };
 };
 declare var Actions: new (instance: PocketnetInstanceType, api: InstanceType<typeof Api>) => {
   init(): void;
