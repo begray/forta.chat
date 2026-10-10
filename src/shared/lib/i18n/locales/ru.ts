@@ -250,6 +250,18 @@ export const ru: Record<TranslationKey, string> = {
   "settings.addAccount": "Добавить аккаунт",
   "settings.removeAccount": "Выйти",
   "settings.removeAccountConfirm": "Выйти из этого аккаунта?",
+  "settings.deleteAccount.button": "Удалить аккаунт",
+  "settings.deleteAccount.question": "Вы действительно хотите удалить аккаунт навсегда? Это действие невозможно будет отменить.",
+  "settings.deleteAccount.yes": "Да, удалить аккаунт навсегда",
+  "settings.deleteAccount.ok": "ОК",
+  "settings.deleteAccount.step.prepare": "Подготовка",
+  "settings.deleteAccount.step.removePeertube": "Удаление данных с видеосерверов",
+  "settings.deleteAccount.step.removeMatrix": "Удаление данных с сервера чата",
+  "settings.deleteAccount.step.removeBB": "Удаление аккаунта из блокчейна",
+  "settings.deleteAccount.success": "Удаление вашего аккаунта прошло успешно. В течение 10 минут процедура должна завершиться полностью.",
+  "settings.deleteAccount.error.notprepared": "Аккаунт не найден в блокчейне, возможно требуется подождать некоторое время",
+  "settings.deleteAccount.error.balance": "Произошла ситуация, в которой удаление аккаунта невозможно. Для того, чтобы совершить действие необходимо иметь минимальный баланс PKOIN",
+  "settings.deleteAccount.error.undefinedError": "Возникла непредвиденная ошибка при удалении аккаунта, попробуйте перезапустить приложение и совершить действие снова",
   "settings.switching": "Переключение...",
 
   // ── Settings content / Appearance ──

@@ -40,6 +40,14 @@ export const isAndroid = Capacitor.getPlatform() === "android";
 /** True on iOS specifically (module-load snapshot). */
 export const isIOS = Capacitor.getPlatform() === "ios";
 
+/**
+ * App Store rules: the iOS app shows no PKOIN wallet — no balance and no way to
+ * send PKOIN (chat transfer, post boost). Display only: the wallet store and
+ * Actions keep loading balances in the background (account deletion, fees).
+ * Messages that carry a transaction are still shown.
+ */
+export const isPkoinWalletEnabled = !isIOS;
+
 /** One-line diagnostic for logcat / chrome://inspect — snapshot vs live. */
 export function logPlatformGate(tag = "[Platform]"): void {
   const live = isNativePlatform();

@@ -354,6 +354,17 @@ export class MatrixClientService {
     return store;
   }
 
+  /** Deactivate this account on the homeserver and erase its data (account
+   *  deletion). `auth` is the same object Pocketnet passes — its
+   *  matrixCredentials() — so the server sees an identical request. */
+  async deactivateAccount(): Promise<void> {
+    if (!this.client) throw new Error("No Matrix client");
+    if (!this.credentials) throw new Error("No credentials set");
+    const { address, username, password } = this.credentials;
+    const auth = { type: "m.login.password", user: address, username, address, password, sessionId: "" };
+    await this.client.deactivateAccount(auth as Parameters<MatrixClient["deactivateAccount"]>[0], true);
+  }
+
   /** Main login/register + start client flow */
   async getClient(): Promise<MatrixClient | null> {
     if (!this.credentials) throw new Error("No credentials set");

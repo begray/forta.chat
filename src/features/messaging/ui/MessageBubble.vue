@@ -948,7 +948,12 @@ const replyPreviewSender = computed(() => {
             class="flex items-center justify-center bg-neutral-grad-0"
             :style="imagePlaceholderStyle"
           >
-            <div class="contain-strict h-8 w-8 animate-spin rounded-full border-2 border-color-bg-ac border-t-transparent" />
+            <!-- Off-screen images have not started downloading (gated on the
+                 viewport); a static placeholder keeps idle chats from spinning. -->
+            <div
+              v-if="imageInViewport || fileState.loading"
+              class="contain-strict h-8 w-8 animate-spin rounded-full border-2 border-color-bg-ac border-t-transparent"
+            />
           </div>
           <div
             v-else-if="fileState.error && fileState.errorKind === 'crypto'"

@@ -248,6 +248,18 @@ export const en = {
   "settings.addAccount": "Add Account",
   "settings.removeAccount": "Log out",
   "settings.removeAccountConfirm": "Log out of this account?",
+  "settings.deleteAccount.button": "Delete account",
+  "settings.deleteAccount.question": "Are you sure you want to permanently delete your account? This action cannot be undone.",
+  "settings.deleteAccount.yes": "Yes, delete account permanently",
+  "settings.deleteAccount.ok": "OK",
+  "settings.deleteAccount.step.prepare": "Preparing",
+  "settings.deleteAccount.step.removePeertube": "Deleting data from video servers",
+  "settings.deleteAccount.step.removeMatrix": "Deleting data from the chat server",
+  "settings.deleteAccount.step.removeBB": "Removing the account from the blockchain",
+  "settings.deleteAccount.success": "Your account has been deleted. The procedure should be fully completed within 10 minutes.",
+  "settings.deleteAccount.error.notprepared": "Account not found on the blockchain, you may need to wait a while",
+  "settings.deleteAccount.error.balance": "The account cannot be deleted right now. To perform this action you need a minimum PKOIN balance",
+  "settings.deleteAccount.error.undefinedError": "An unexpected error occurred while deleting your account. Please restart the app and try again",
   "settings.switching": "Switching...",
 
   // ── Settings content / Appearance ──

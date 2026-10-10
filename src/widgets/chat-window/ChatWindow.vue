@@ -21,6 +21,7 @@ import { useCallLauncher, CallProviderPicker, CallFeedbackDock } from "@/feature
 import type { CallType } from "@/entities/call";
 import { useWalletStore } from "@/features/wallet";
 import DonateModal from "@/features/wallet/ui/DonateModal.vue";
+import { isPkoinWalletEnabled } from "@/shared/lib/platform";
 import { hexEncode, hexDecode } from "@/shared/lib/matrix/functions";
 import DropOverlay from "@/features/messaging/ui/DropOverlay.vue";
 import { usePasteDrop } from "@/features/messaging/model/use-paste-drop";
@@ -702,7 +703,7 @@ onUnmounted(() => {
         <MessageInput
           v-else
           ref="messageInputRef"
-          :show-donate="!chatStore.activeRoom?.isGroup && walletStore.isAvailable"
+          :show-donate="!chatStore.activeRoom?.isGroup && walletStore.isAvailable && isPkoinWalletEnabled"
           @donate="showDonateModal = true"
         />
       </template>

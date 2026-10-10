@@ -67,6 +67,8 @@ import {
   createBackoffRetry,
 } from "../lib";
 import { connectMatrixWithRetry } from "../lib/connect-matrix-with-retry";
+import { runDeleteAccount, type DeleteAccountStep } from "../lib/delete-account";
+import { removePeertubeAccount } from "@/shared/lib/peertube/remove-peertube-account";
 import { armMatrixReconnect, onForeground } from "../lib/matrix-reconnect";
 import { createKeyPair } from "./key-pair";
 import { generateEncryptionKeys, clearEncryptionKeysCache } from "./encryption-keys";
@@ -2443,6 +2445,32 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     syncSessionsFromStorage();
   };
 
+  /** Permanently delete the active account, as Pocketnet does (see
+   *  runDeleteAccount), then sign out: the Matrix account is gone and the
+   *  chain no longer has the profile. A second call joins the running one. */
+  let _deleteRun: Promise<void> | null = null;
+  const deleteAccount = (onProgress?: (step: DeleteAccountStep) => void): Promise<void> => {
+    if (_deleteRun) return _deleteRun;
+    const target = activeAddress.value ?? "";
+    _deleteRun = runDeleteAccount({
+      address: target,
+      isRegistered: (a) => appInitializer.checkUserRegistered(a),
+      getBalance: () => appInitializer.getActualBalance(),
+      removePeertube: async () => {
+        const sign = window.POCKETNETINSTANCE?.user.signature;
+        if (!sign) throw new Error("no signing key");
+        const hosts = await appInitializer.getPeertubeServers();
+        return removePeertubeAccount({ hosts, address: target, sign: () => sign("peertube") });
+      },
+      deactivateMatrix: () => getMatrixClientService().deactivateAccount(),
+      deleteOnChain: (a) => appInitializer.deleteAccountOnChain(a),
+      onProgress,
+    })
+      .then(() => logout())
+      .finally(() => { _deleteRun = null; });
+    return _deleteRun;
+  };
+
   let _switching = false;
 
   /** Hot-swap to a different account without page reload */
@@ -2552,6 +2580,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     inactiveAccounts,
     addAccount,
     removeAccount,
+    deleteAccount,
     switchAccount,
     /** Get unread count for a background account */
     getBackgroundUnreadCount: (addr: string) => backgroundSyncManager.getUnreadCount(addr),

@@ -3,6 +3,7 @@ import type { UserData } from "./types";
 import { PocketnetInstanceConfigurator } from "../chat-scripts";
 import { PocketnetInstance } from "../chat-scripts/config/pocketnetinstance";
 import { withTimeout } from "@/shared/lib/with-timeout";
+import { flattenPeertubeServers } from "@/shared/lib/peertube/remove-peertube-account";
 import {
   hasFreshArchivedPeertubeServers,
   loadArchivedPeertubeServers,
@@ -186,6 +187,8 @@ type OnLoadUserData = (userData: UserData) => void;
  *  indefinitely. A 15s bound converts that hang into a surfaced error so the
  *  caller can rotate to another proxy / show retry UX (WEE-23). */
 const REGISTRATION_RPC_TIMEOUT = 15_000;
+/** Bound for each network step of account deletion (unspents, server list, accDel). */
+const ACCOUNT_DELETE_TIMEOUT = 30_000;
 /** Bound for each step of the archived peertube hosts load (ping, SDK call). */
 const PEERTUBE_SERVERS_TIMEOUT = 10_000;
 
@@ -686,6 +689,33 @@ export class AppInitializer {
       console.error("[appInit] editUserData failed:", errMessage);
       return { success: false, reason, error: errMessage };
     }
+  }
+
+  /** Spendable PKOIN of the signed-in account after refreshing its unspents
+   *  (Pocketnet deleteaccount `prepare`). Null when the wallet is unavailable. */
+  async getActualBalance(): Promise<number | null> {
+    const account = this.actions?.getCurrentAccount?.();
+    if (!account) return null;
+    await withTimeout(account.updateUnspents(), ACCOUNT_DELETE_TIMEOUT, "updateUnspents");
+    return account.actualBalance().actual;
+  }
+
+  /** Video servers of every peertube group (`peertube/allservers`), deduplicated. */
+  async getPeertubeServers(): Promise<string[]> {
+    if (!this.api) return [];
+    await this.initApi();
+    const data = await withTimeout(this.api.fetch("peertube/allservers"), ACCOUNT_DELETE_TIMEOUT, "peertube/allservers");
+    return flattenPeertubeServers(data);
+  }
+
+  /** Broadcast Pocketnet's `accDel` transaction for `address`. Throws on failure. */
+  async deleteAccountOnChain(address: string): Promise<unknown> {
+    if (!this.actions) throw new Error("Actions not available");
+    return withTimeout(
+      this.actions.addActionAndSendIfCan(new DeleteAccount(), null, address),
+      ACCOUNT_DELETE_TIMEOUT,
+      "deleteAccount",
+    );
   }
 
   initApi() {

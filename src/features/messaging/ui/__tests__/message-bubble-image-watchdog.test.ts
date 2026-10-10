@@ -85,6 +85,16 @@ describe("MessageBubble — image spinner watchdog (WEE-90 H3)", () => {
     expect(resolvedIdx, "id-watch must reset + re-arm the image watchdog").toBeGreaterThan(-1);
   });
 
+  it("does not spin the placeholder of an off-screen image whose download has not started", () => {
+    // Every row is mounted eagerly; an idle chat used to spin a spinner per
+    // off-screen image (seen on a device: 5 spinners, none near the viewport).
+    const source = getSource();
+    const start = source.indexOf('v-if="!feedImageSrc && !imageLoadTimedOut');
+    expect(start).toBeGreaterThan(-1);
+    const block = source.slice(start, source.indexOf("</div>", start));
+    expect(block).toMatch(/v-if="imageInViewport \|\| fileState\.loading"\s*class="[^"]*animate-spin/);
+  });
+
   it("clears the load timer on unmount to avoid late writes to a dead ref", () => {
     const source = getSource();
     expect(source).toContain("onBeforeUnmount(clearImageLoadTimer)");

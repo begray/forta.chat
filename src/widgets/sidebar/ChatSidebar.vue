@@ -9,7 +9,7 @@ import { InviteModal } from "@/features/invite";
 import { useWalletStore, formatPkoin } from "@/features/wallet";
 import { useChatStore } from "@/entities/chat";
 import { useAuthStore } from "@/entities/auth";
-import { isNativePlatform, isLocalAiFeatureEnabled, logPlatformGate } from "@/shared/lib/platform";
+import { isNativePlatform, isLocalAiFeatureEnabled, logPlatformGate, isPkoinWalletEnabled } from "@/shared/lib/platform";
 import { ConnectionStatusHeader } from "@/features/sync-status";
 import { RoomListSkeleton } from "@/shared/ui/skeleton";
 import { SelectionBar, useSelectionStore } from "@/features/selection";
@@ -319,9 +319,9 @@ const walletStore = useWalletStore();
 
             <TorShieldIndicator />
 
-            <!-- PKOIN Wallet -->
+            <!-- PKOIN Wallet (not shown on iOS; the wallet still runs) -->
             <button
-              v-if="walletStore.isAvailable"
+              v-if="walletStore.isAvailable && isPkoinWalletEnabled"
               class="btn-press flex h-9 items-center gap-1.5 rounded-full bg-neutral-grad-0 px-2.5 text-text-color transition-colors hover:bg-neutral-grad-2/30"
               :title="t('settings.wallet')"
               @click="walletStore.refresh()"
