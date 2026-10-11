@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { enqueueDecrypt } from "./decrypt-queue";
+import { DecryptTimeoutError, decryptTimeoutMs, enqueueDecrypt } from "./decrypt-queue";
 
 /**
  * Regression for WEE-90 H4.
@@ -49,5 +49,36 @@ describe("enqueueDecrypt (WEE-90 H4)", () => {
 
     await expect(next).resolves.toBe("next");
     expect(nextRan).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("decrypt deadline", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("rejects with DecryptTimeoutError so callers can tell it from network errors", async () => {
+    const p = enqueueDecrypt(() => new Promise<never>(() => { /* hang */ }));
+    const assertion = expect(p).rejects.toBeInstanceOf(DecryptTimeoutError);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await assertion;
+  });
+
+  it("grows with the file size", () => {
+    expect(decryptTimeoutMs(0)).toBe(60_000);
+    expect(decryptTimeoutMs(100 * 1024 * 1024)).toBeGreaterThan(4 * 60_000);
+  });
+
+  it("honours a per-task deadline longer than the base", async () => {
+    let settled = false;
+    const p = enqueueDecrypt(() => new Promise<never>(() => { /* hang */ }), 120_000);
+    p.catch(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(settled).toBe(true);
   });
 });

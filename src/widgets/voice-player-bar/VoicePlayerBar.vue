@@ -9,6 +9,9 @@ import { useCallStore } from "@/entities/call";
 import { requestScrollToMessage } from "@/features/messaging/model/pending-scroll";
 import { useVoiceMediaSession } from "@/features/messaging/model/use-voice-media-session";
 import { useUserStore } from "@/entities/user/model";
+import { UserAvatar } from "@/entities/user";
+import { visibleChatRoomId } from "@/features/messaging/model/visible-chat-room";
+import { getVoiceWaveform, waveformBars } from "@/features/messaging/model/voice-waveform";
 import { useSidebarTab } from "@/widgets/sidebar/model/use-sidebar-tab";
 
 const { t } = useI18n();
@@ -42,11 +45,33 @@ const senderName = computed(() =>
   meta.value ? chatStore.getDisplayName(meta.value.senderId) : "",
 );
 
-const roomName = computed(() => {
+// The voice's own chat is on screen: its bubble already has the controls.
+const isShown = computed(() => !!meta.value && visibleChatRoomId.value !== meta.value.roomId);
+
+const room = computed(() => {
   const roomId = meta.value?.roomId;
-  if (!roomId) return "";
-  return resolveRoomName(chatStore.rooms.find((r) => r.id === roomId));
+  return roomId ? chatStore.rooms.find((r) => r.id === roomId) : undefined;
 });
+
+const roomName = computed(() => (room.value ? resolveRoomName(room.value) : ""));
+
+/** `__pocketnet__:<address>` avatars belong to a Bastyon user (direct chats). */
+const avatarAddress = computed(() => {
+  const avatar = room.value?.avatar;
+  return avatar?.startsWith("__pocketnet__:") ? avatar.slice("__pocketnet__:".length) : null;
+});
+
+const BARS = 28;
+const bars = computed(() => {
+  const current = meta.value;
+  return waveformBars(current ? getVoiceWaveform(current.messageId, current.waveform) : null, BARS);
+});
+const playedBars = computed(() => Math.floor(playback.progress.value * BARS));
+
+const seekTo = (e: MouseEvent) => {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  if (rect.width > 0) playback.seekByRatio(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)));
+};
 
 const isPlaying = computed(() => playback.state.value === "playing");
 
@@ -84,7 +109,7 @@ const openMessage = () => {
 
 <template>
   <div
-    v-if="meta"
+    v-if="isShown"
     data-testid="voice-player-bar"
     class="relative flex h-11 shrink-0 items-center gap-2 border-b border-neutral-grad-0 bg-background-total-theme px-3"
   >
@@ -108,15 +133,40 @@ const openMessage = () => {
 
     <button
       data-testid="voice-player-open"
-      class="flex min-w-0 flex-1 flex-col items-start text-left leading-tight"
+      class="flex min-w-0 flex-1 items-center gap-2 text-left leading-tight"
       :aria-label="t('voicePlayer.openMessage')"
       @click="openMessage"
     >
-      <span class="w-full truncate text-sm font-medium text-text-color">{{ senderName }}</span>
-      <span class="w-full truncate text-xs text-text-on-main-bg-color">
-        {{ roomName || t("message.voiceMessage") }}
+      <UserAvatar v-if="avatarAddress" data-testid="voice-player-avatar" :address="avatarAddress" size="sm" />
+      <Avatar
+        v-else
+        data-testid="voice-player-avatar"
+        :src="room?.avatar"
+        :name="roomName || senderName"
+        size="sm"
+      />
+      <span class="flex min-w-0 flex-1 flex-col items-start">
+        <span class="w-full truncate text-sm font-medium text-text-color">{{ senderName }}</span>
+        <span class="w-full truncate text-xs text-text-on-main-bg-color">
+          {{ roomName || t("message.voiceMessage") }}
+        </span>
       </span>
     </button>
+
+    <!-- Waveform: tap to seek; bars recolor only on timeupdate. -->
+    <div
+      data-testid="voice-player-waveform"
+      class="flex h-5 shrink-0 cursor-pointer items-center gap-[2px]"
+      @click="seekTo"
+    >
+      <div
+        v-for="(v, i) in bars"
+        :key="i"
+        class="w-[2px] rounded-full"
+        :class="i < playedBars ? 'bg-color-bg-ac' : 'bg-color-bg-ac/30'"
+        :style="{ height: `${Math.max(2, v * 20)}px` }"
+      />
+    </div>
 
     <button
       data-testid="voice-player-speed"

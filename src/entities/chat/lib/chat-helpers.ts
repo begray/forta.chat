@@ -220,10 +220,12 @@ export function parseFileInfo(content: Record<string, unknown>, msgtype: string)
   }
 
   if (msgtype === "m.audio" && info) {
-    // Waveform arrives as integers 0-1024 (MSC3245), normalize to 0-1 floats
+    // Waveform arrives as integers 0-1024 (MSC3245), normalize to 0-1 floats.
+    // The scale is per array: an integer 1 among them is 1/1024, not full height.
     const rawWaveform = info.waveform as number[] | undefined;
+    const isIntegerScale = !!rawWaveform?.some((v: number) => v > 1);
     const normalizedWaveform = rawWaveform?.length
-      ? rawWaveform.map((v: number) => v > 1 ? v / 1024 : v)
+      ? rawWaveform.map((v: number) => isIntegerScale ? v / 1024 : v)
       : undefined;
 
     return {
@@ -376,7 +378,10 @@ export function isUnresolvedName(name: string): boolean {
   if (/^[A-Za-z0-9]{8}\u2026/i.test(name)) return true; // truncated address (8chars…)
   if (/^@[a-f0-9]{20,}:/i.test(name)) return true; // raw Matrix ID @hexid:server
   if (/^![a-zA-Z0-9]+:/i.test(name)) return true; // Matrix room ID !abc:server
-  if (/^[A-Za-z0-9]{20,}$/.test(name)) return true; // raw Bastyon address (base58, 20+ chars)
+  // Raw Bastyon address: exactly 34 base58 chars. A looser "20+ alphanumerics"
+  // check also matched real names like "dgfgfhfhghfghfghfghf", which then
+  // stayed a skeleton forever.
+  if (/^[1-9A-HJ-NP-Za-km-z]{34}$/.test(name)) return true;
   return false;
 }
 

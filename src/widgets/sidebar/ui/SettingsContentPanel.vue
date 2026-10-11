@@ -16,6 +16,7 @@ import { Toggle } from "@/shared/ui/toggle";
 import Modal from "@/shared/ui/modal/Modal.vue";
 import EmojiPicker from "@/features/messaging/ui/EmojiPicker.vue";
 import { UserEditForm, CallProvidersSection } from "@/features/user-management";
+import { DeleteAccountButton } from "@/features/auth";
 import { StorageSettings, NotificationSettings, TorSettingsSection, DesktopSettingsSection, LocalAiSettingsSection } from "@/features/settings";
 import { useLiveQuery, isChatDbReady, getChatDb } from "@/shared/lib/local-db";
 import type { TelemetrySnapshot } from "@/shared/lib/telemetry";
@@ -190,6 +191,9 @@ const title = computed(() => {
     <div v-if="settingsSubView === 'profile'" class="flex-1 overflow-y-auto">
       <div class="mx-auto max-w-2xl p-6">
         <UserEditForm />
+        <div class="mt-6 border-t border-neutral-grad-0 pt-4">
+          <DeleteAccountButton />
+        </div>
       </div>
     </div>
 

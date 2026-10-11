@@ -4,7 +4,6 @@ import { useThemeStore } from "@/entities/theme";
 import { useTorStore } from "@/entities/tor";
 import { useUserStore } from "@/entities/user/model";
 import { AccountList, AddAccountModal } from "@/features/account-switcher";
-import { DeleteAccountButton } from "@/features/auth";
 import { useWalletStore, formatPkoin } from "@/features/wallet";
 import Avatar from "@/shared/ui/avatar/Avatar.vue";
 import { Toggle } from "@/shared/ui/toggle";
@@ -736,8 +735,6 @@ const handleLogout = () => {
           </svg>
           <span class="flex-1 text-left text-sm">{{ t("settings.logout") }}</span>
         </button>
-
-        <DeleteAccountButton />
       </div>
     </div>
 

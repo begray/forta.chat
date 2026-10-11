@@ -372,6 +372,9 @@ export const en = {
   "message.videoUnsupportedFormat": "Video format not supported",
   "message.videoLoadFailed": "Failed to load video",
   "message.videoDownload": "Download",
+  "message.videoDownloadFailed": "Couldn't download the video",
+  "message.cancelDownload": "Cancel download",
+  "message.decrypting": "Decrypting…",
 
   // ── Message context menu ──
   "contextMenu.reply": "Reply",

@@ -113,6 +113,10 @@ vi.mock("@/widgets/sidebar/model/use-sidebar-tab", () => ({
   }),
 }));
 
+vi.mock("@/widgets/sidebar/model/use-sidebar-route-sync", () => ({
+  useSidebarRouteSync: vi.fn(),
+}));
+
 vi.mock("@/shared/lib/composables/use-android-back-handler", () => ({
   useAndroidBackHandler: vi.fn(),
 }));
@@ -129,6 +133,7 @@ vi.mock("@/features/messaging/model/use-audio-playback", () => ({
 
 // ── Now import the SFC AFTER mocks are set up ─────────────────────
 import ChatPage from "../ChatPage.vue";
+import { visibleChatRoomId } from "@/features/messaging/model/visible-chat-room";
 
 // Stub <transition> to a pass-through so v-show display:none is applied
 // synchronously — jsdom/happy-dom don't fire transitionend, so the real
@@ -554,5 +559,42 @@ describe("ChatPage — voice playback outlives the page", () => {
     wrapper.unmount();
 
     expect(playbackStopSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatPage — visible chat room (voice mini-player hides in its chat)", () => {
+  const setWidth = (value: number) =>
+    Object.defineProperty(window, "innerWidth", { value, configurable: true, writable: true });
+
+  it("publishes the open room on mobile, null while the list is shown", async () => {
+    const wrapper = mount(ChatPage, mountOpts);
+    await flushPromises();
+    expect(visibleChatRoomId.value).toBeNull();
+
+    fakeActiveRoomId.value = "!abc:matrix.org";
+    await flushPromises();
+    expect(visibleChatRoomId.value).toBe("!abc:matrix.org");
+
+    wrapper.unmount();
+    expect(visibleChatRoomId.value).toBeNull();
+  });
+
+  it("publishes null while settings or a channel cover the room", async () => {
+    setWidth(1200);
+    fakeActiveRoomId.value = "!abc:matrix.org";
+    const wrapper = mount(ChatPage, mountOpts);
+    await flushPromises();
+    expect(visibleChatRoomId.value).toBe("!abc:matrix.org");
+
+    settingsSubViewRef.value = "appearance";
+    await flushPromises();
+    expect(visibleChatRoomId.value).toBeNull();
+
+    settingsSubViewRef.value = null;
+    fakeActiveChannelAddress.value = "PChannel";
+    await flushPromises();
+    expect(visibleChatRoomId.value).toBeNull();
+
+    wrapper.unmount();
   });
 });

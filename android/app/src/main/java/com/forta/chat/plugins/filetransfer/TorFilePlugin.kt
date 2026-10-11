@@ -18,6 +18,9 @@ class TorFilePlugin : Plugin() {
     companion object {
         private const val TAG = "TorFilePlugin"
         private const val BUFFER_SIZE = 8192
+        private const val DOWNLOAD_CONNECT_TIMEOUT_MS = 30_000
+        private const val DOWNLOAD_READ_TIMEOUT_MS = 60_000
+        private const val PROGRESS_HEARTBEAT_MS = 1_000L
     }
 
     /**
@@ -39,6 +42,7 @@ class TorFilePlugin : Plugin() {
         }
         val mimeType = call.getString("mimeType") ?: "application/octet-stream"
         val authHeader = call.getString("authorization") ?: ""
+        val transferId = call.getString("id")
 
         Thread {
             try {
@@ -80,6 +84,7 @@ class TorFilePlugin : Plugin() {
                                     put("percent", percent)
                                     put("loaded", uploaded)
                                     put("total", fileSize)
+                                    if (transferId != null) put("id", transferId)
                                 })
                             }
                         }
@@ -111,10 +116,15 @@ class TorFilePlugin : Plugin() {
             call.reject("url required"); return
         }
         val authHeader = call.getString("authorization") ?: ""
+        val transferId = call.getString("id")
 
         Thread {
             try {
                 val conn = openThroughTor(url)
+                // Without these a Tor circuit that stops delivering bytes keeps
+                // the read blocked forever and the chat shows an endless spinner.
+                conn.connectTimeout = DOWNLOAD_CONNECT_TIMEOUT_MS
+                conn.readTimeout = DOWNLOAD_READ_TIMEOUT_MS
 
                 if (authHeader.isNotEmpty()) {
                     conn.setRequestProperty("Authorization", authHeader)
@@ -135,16 +145,26 @@ class TorFilePlugin : Plugin() {
                         val buffer = ByteArray(BUFFER_SIZE)
                         var downloaded = 0L
                         var bytesRead: Int
+                        var lastPercent = -1
+                        var lastEmitAt = 0L
                         while (input.read(buffer).also { bytesRead = it } != -1) {
                             output.write(buffer, 0, bytesRead)
                             downloaded += bytesRead
-                            if (contentLength > 0) {
-                                notifyListeners("progress", JSObject().apply {
-                                    put("percent", (downloaded * 100 / contentLength).toInt())
-                                    put("loaded", downloaded)
-                                    put("total", contentLength)
-                                })
-                            }
+                            // On a percent change or once a second: an event per
+                            // 8 KB chunk flooded the bridge (~12k calls for 100 MB),
+                            // while the heartbeat tells JS the transfer is alive on
+                            // slow links and when the size is unknown (total = 0).
+                            val percent = if (contentLength > 0) (downloaded * 100 / contentLength).toInt() else 0
+                            val now = System.currentTimeMillis()
+                            if (percent == lastPercent && now - lastEmitAt < PROGRESS_HEARTBEAT_MS) continue
+                            lastPercent = percent
+                            lastEmitAt = now
+                            notifyListeners("progress", JSObject().apply {
+                                put("percent", percent)
+                                put("loaded", downloaded)
+                                put("total", if (contentLength > 0) contentLength else 0L)
+                                if (transferId != null) put("id", transferId)
+                            })
                         }
                     }
                 }

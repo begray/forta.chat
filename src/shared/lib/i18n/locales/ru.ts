@@ -374,6 +374,9 @@ export const ru: Record<TranslationKey, string> = {
   "message.videoUnsupportedFormat": "Формат видео не поддерживается",
   "message.videoLoadFailed": "Не удалось воспроизвести видео",
   "message.videoDownload": "Скачать",
+  "message.videoDownloadFailed": "Не удалось скачать видео",
+  "message.cancelDownload": "Отменить загрузку",
+  "message.decrypting": "Расшифровка…",
 
   // ── Message context menu ──
   "contextMenu.reply": "Ответить",

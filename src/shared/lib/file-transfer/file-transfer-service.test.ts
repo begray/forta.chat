@@ -151,8 +151,8 @@ describe('FileTransferService — progress filtering', () => {
     registeredProgressCb!({ id: 'msg-1', percent: 75, loaded: 768, total: 1024 });
 
     expect(onProgress).toHaveBeenCalledTimes(2);
-    expect(onProgress).toHaveBeenNthCalledWith(1, 25);
-    expect(onProgress).toHaveBeenNthCalledWith(2, 75);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 25, 256, 1024);
+    expect(onProgress).toHaveBeenNthCalledWith(2, 75, 768, 1024);
 
     resolveUpload({ contentUri: 'mxc://x', statusCode: 200 });
     await pending;
@@ -202,7 +202,7 @@ describe('FileTransferService — progress filtering', () => {
     // Android emits without an `id` field — the listener must still
     // forward, otherwise Android progress bars would freeze entirely.
     registeredProgressCb!({ percent: 33, loaded: 33, total: 100 });
-    expect(onProgress).toHaveBeenCalledWith(33);
+    expect(onProgress).toHaveBeenCalledWith(33, 33, 100);
 
     resolveUpload({ contentUri: 'mxc://x', statusCode: 200 });
     await pending;
@@ -220,5 +220,33 @@ describe('FileTransferService — progress filtering', () => {
     });
     // The mock's `remove` clears registeredProgressCb; assert teardown ran.
     expect(registeredProgressCb).toBeNull();
+  });
+
+  it('concurrent transfers keep their own progress listener', async () => {
+    // Regression: a single shared listener field was replaced (and removed)
+    // by the next transfer, so the first download stopped getting progress.
+    const listeners: { cb: ProgressCb; removed: boolean }[] = [];
+    mockAddListener.mockImplementation(async (_event, cb) => {
+      const entry = { cb, removed: false };
+      listeners.push(entry);
+      return { remove: () => { entry.removed = true; } };
+    });
+    let finishFirst: (v: unknown) => void = () => {};
+    mockDownload
+      .mockImplementationOnce(() => new Promise((r) => { finishFirst = r; }))
+      .mockResolvedValueOnce({ filePath: '/tmp/b', mimeType: 'video/mp4', size: 1 });
+    const svc = await importFreshService();
+    const first = vi.fn();
+
+    const pending = svc.download({ url: 'https://hs/a', id: 'a', onProgress: first });
+    await svc.download({ url: 'https://hs/b', id: 'b', onProgress: vi.fn() });
+
+    expect(listeners[0].removed).toBe(false);
+    listeners[0].cb({ id: 'a', percent: 40, loaded: 4, total: 10 });
+    expect(first).toHaveBeenCalledWith(40, 4, 10);
+
+    finishFirst({ filePath: '/tmp/a', mimeType: 'video/mp4', size: 1 });
+    await pending;
+    expect(listeners.every((l) => l.removed)).toBe(true);
   });
 });

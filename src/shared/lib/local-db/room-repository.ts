@@ -29,6 +29,20 @@ export type RoomChange =
   | { type: "upsert"; room: LocalRoom }
   | { type: "delete"; roomId: string };
 
+/** Rows written before system details were synced with the room list hold a
+ *  system preview with no template, so the chat list showed the bare sender
+ *  address. True when `update` carries those details for the same event. */
+export function needsSystemPreviewRepair(
+  prev: Pick<LocalRoom, "lastMessageType" | "lastMessageSystemMeta" | "lastMessageEventId">,
+  update: { lastMessageEventId?: string; lastMessageSystemMeta?: LocalRoom["lastMessageSystemMeta"] },
+): boolean {
+  return prev.lastMessageType === MessageType.system
+    && !prev.lastMessageSystemMeta
+    && !!update.lastMessageSystemMeta
+    && !!prev.lastMessageEventId
+    && update.lastMessageEventId === prev.lastMessageEventId;
+}
+
 export class RoomRepository {
   constructor(private db: ChatDatabase) {}
 
@@ -134,6 +148,8 @@ export class RoomRepository {
       lastMessageEventId?: string;
       lastMessageLocalStatus?: LocalMessageStatus;
       lastMessageReaction?: LocalRoom["lastMessageReaction"];
+      lastMessageCallInfo?: LocalRoom["lastMessageCallInfo"];
+      lastMessageSystemMeta?: LocalRoom["lastMessageSystemMeta"];
       isDeleted?: boolean;
       deletedAt?: number | null;
       deleteReason?: "left" | "kicked" | "banned" | "removed" | null;
@@ -169,8 +185,9 @@ export class RoomRepository {
           const unreadChanged = update.serverUnreadCount !== undefined
             && (prev.unreadCount ?? 0) !== update.serverUnreadCount;
           const needsRevive = prev.isDeleted;
+          const needsSystemRepair = needsSystemPreviewRepair(prev, update);
 
-          if (!tsAdvanced && !metaChanged && !unreadChanged && !needsRevive) {
+          if (!tsAdvanced && !metaChanged && !unreadChanged && !needsRevive && !needsSystemRepair) {
             continue; // Skip unchanged room — avoid unnecessary Dexie write
           }
 
@@ -199,6 +216,13 @@ export class RoomRepository {
               prev.lastMessageTimestamp ?? 0,
               effectiveTs,
             );
+          }
+
+          if (needsSystemRepair) {
+            patched.lastMessageSystemMeta = update.lastMessageSystemMeta;
+            if (!prev.lastMessageCallInfo && update.lastMessageCallInfo) {
+              patched.lastMessageCallInfo = update.lastMessageCallInfo;
+            }
           }
 
           // Revive tombstoned rooms
@@ -250,6 +274,8 @@ export class RoomRepository {
             lastMessageLocalStatus: update.lastMessageLocalStatus,
             lastMessageDecryptionStatus: undefined,
             lastMessageReaction: update.lastMessageReaction ?? null,
+            lastMessageCallInfo: update.lastMessageCallInfo,
+            lastMessageSystemMeta: update.lastMessageSystemMeta,
             historyVisibility: update.historyVisibility ?? null,
           };
           toPut.push(newRoom);

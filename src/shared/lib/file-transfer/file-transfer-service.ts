@@ -11,10 +11,9 @@ import { isNative } from '@/shared/lib/platform';
  *
  *  `id` (optional) — caller-supplied progress identifier so concurrent
  *  uploads/downloads can be demultiplexed via the `progress` event.
- *  iOS echoes it back inside the event payload; Android does not yet
- *  emit `id`, in which case the listener treats every event as matching
- *  the active call (single-transfer semantics — same as before this
- *  parameter existed). */
+ *  iOS and Android echo it back inside the event payload. Older native
+ *  builds omit it, in which case the listener treats every event as
+ *  matching the active call (single-transfer semantics). */
 export interface TorFileNativePlugin {
   upload(options: {
     filePath: string;
@@ -36,9 +35,26 @@ export interface TorFileNativePlugin {
 
 const TorFile = registerPlugin<TorFileNativePlugin>('TorFile');
 
-class FileTransferService {
-  private progressListener: { remove: () => void } | null = null;
+/** `loaded` / `total` are bytes as reported by the native side. */
+type ProgressCallback = (percent: number, loaded: number, total: number) => void;
 
+/** Subscribe to native progress for one transfer. Each call gets its own
+ *  listener: a shared one was replaced by the next transfer, so with several
+ *  downloads in flight the earlier ones lost their progress. */
+function listenProgress(
+  id: string | undefined,
+  onProgress: ProgressCallback,
+): Promise<{ remove: () => void }> {
+  return TorFile.addListener('progress', (data) => {
+    // Filter only when both the caller supplied an id AND the native event
+    // echoed one back. If either side omits it (older native builds, or
+    // callers that do not care about per-transfer demux), accept every event.
+    if (id && data.id && data.id !== id) return;
+    onProgress(data.percent, data.loaded, data.total);
+  });
+}
+
+class FileTransferService {
   async upload(options: {
     filePath: string;
     uploadUrl: string;
@@ -49,24 +65,15 @@ class FileTransferService {
      *  can be matched back to the message bubble even when several
      *  uploads are in flight (chat with bulk forwards / share-target). */
     id?: string;
-    onProgress?: (percent: number) => void;
+    onProgress?: ProgressCallback;
   }): Promise<string> {
     if (!isNative) {
       throw new Error('FileTransferService.upload() is native-only. Use fetch on web.');
     }
 
-    if (options.onProgress) {
-      this.progressListener?.remove();
-      this.progressListener = await TorFile.addListener('progress', (data) => {
-        // Filter only when both the caller supplied an id AND the native
-        // event echoed one back. If either side omits it (Android today,
-        // or callers that do not care about per-transfer demux), fall
-        // through and accept every event — same behaviour as before this
-        // parameter existed.
-        if (options.id && data.id && data.id !== options.id) return;
-        options.onProgress!(data.percent);
-      });
-    }
+    const listener = options.onProgress
+      ? await listenProgress(options.id, options.onProgress)
+      : null;
 
     try {
       const result = await TorFile.upload({
@@ -78,8 +85,7 @@ class FileTransferService {
       });
       return result.contentUri;
     } finally {
-      this.progressListener?.remove();
-      this.progressListener = null;
+      listener?.remove();
     }
   }
 
@@ -88,19 +94,15 @@ class FileTransferService {
     authorization?: string;
     /** Optional per-transfer identifier — see `TorFileNativePlugin.id`. */
     id?: string;
-    onProgress?: (percent: number) => void;
+    onProgress?: ProgressCallback;
   }): Promise<{ filePath: string; mimeType: string }> {
     if (!isNative) {
       throw new Error('FileTransferService.download() is native-only.');
     }
 
-    if (options.onProgress) {
-      this.progressListener?.remove();
-      this.progressListener = await TorFile.addListener('progress', (data) => {
-        if (options.id && data.id && data.id !== options.id) return;
-        options.onProgress!(data.percent);
-      });
-    }
+    const listener = options.onProgress
+      ? await listenProgress(options.id, options.onProgress)
+      : null;
 
     try {
       const result = await TorFile.download({
@@ -110,8 +112,7 @@ class FileTransferService {
       });
       return { filePath: result.filePath, mimeType: result.mimeType };
     } finally {
-      this.progressListener?.remove();
-      this.progressListener = null;
+      listener?.remove();
     }
   }
 }

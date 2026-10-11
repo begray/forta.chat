@@ -28,7 +28,8 @@ import CallLinkCard from "./CallLinkCard.vue";
 import ReactionRow from "./ReactionRow.vue";
 import VoiceMessage from "./VoiceMessage.vue";
 import VideoCirclePlayer from "./VideoCirclePlayer.vue";
-import { ref, inject, onMounted, onBeforeUnmount } from "vue";
+import MediaDownloadProgress from "./MediaDownloadProgress.vue";
+import { ref, shallowRef, inject, onMounted, onBeforeUnmount } from "vue";
 import { useLongPress, useSwipeGesture } from "@/shared/lib/gestures";
 import { useThemeStore } from "@/entities/theme";
 import { hexDecode } from "@/shared/lib/matrix/functions";
@@ -452,7 +453,7 @@ const retryVideoPlayback = () => {
   if (fileState.value.objectUrl) {
     armVideoLoadTimer();
   } else {
-    download(props.message);
+    startVideoLoad();
   }
 };
 
@@ -759,10 +760,53 @@ const reportDownloadProblem = () => {
   });
 };
 
-const handleVideoAudioLoad = () => {
+/** Abort handle for the video download started from this bubble. The ring
+ *  offers a cancel only while it is set: a download started elsewhere (the
+ *  media viewer, another consumer) has no handle here to abort. */
+const videoLoadAbort = shallowRef<AbortController | null>(null);
+
+const startVideoLoad = (opts?: { forceRefetch?: boolean }) => {
   if (!props.message.fileInfo) return;
-  download(props.message);
+  // download() ignores a second call while one is in flight; a fresh handle
+  // here would cancel nothing.
+  if (fileState.value.loading) return;
+  const ac = new AbortController();
+  videoLoadAbort.value = ac;
+  void download(props.message, ac.signal, opts).finally(() => {
+    if (videoLoadAbort.value === ac) videoLoadAbort.value = null;
+  });
 };
+
+const handleVideoAudioLoad = () => startVideoLoad();
+
+const cancelVideoLoad = () => {
+  videoLoadAbort.value?.abort();
+  videoLoadAbort.value = null;
+};
+
+const retryVideoDownload = () => {
+  const state = getState(fileCacheKey.value);
+  state.error = null;
+  state.errorKind = null;
+  startVideoLoad({ forceRefetch: true });
+};
+
+/** Size shown on a video that has not been downloaded yet. */
+const fileSizeText = computed(() => {
+  const size = props.message.fileInfo?.size ?? 0;
+  return size > 0 ? formatSize(size) : "";
+});
+
+/** Caption under the download ring: bytes received, or the decrypt stage. */
+const downloadCaption = computed(() => {
+  const state = fileState.value;
+  if (state.phase === "decrypt") return t("message.decrypting");
+  if (state.progress === null) return fileSizeText.value;
+  const total = props.message.fileInfo?.size ?? 0;
+  return total > 0
+    ? `${formatSize(state.loadedBytes)} / ${formatSize(total)}`
+    : `${state.progress}%`;
+});
 
 const handleReply = () => {
   chatStore.replyingTo = {
@@ -1153,11 +1197,42 @@ const replyPreviewSender = computed(() => {
             @ended="isVideoPlaying = false"
           />
           <div v-else-if="fileState.loading" class="flex h-full w-full items-center justify-center bg-neutral-grad-0">
-            <div class="contain-strict h-8 w-8 animate-spin rounded-full border-2 border-color-bg-ac border-t-transparent" />
+            <MediaDownloadProgress
+              :phase="fileState.phase"
+              :progress="fileState.progress"
+              :caption="downloadCaption"
+              :cancellable="videoLoadAbort !== null"
+              @cancel="cancelVideoLoad"
+            />
+          </div>
+          <!-- Download failed: say so and offer a retry. Without this branch a
+               failed download fell through to the play button below and looked
+               exactly like a video that had not been loaded yet. -->
+          <div
+            v-else-if="fileState.error"
+            class="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-neutral-grad-0 px-3 text-center text-xs text-color-bad"
+            data-testid="video-download-error"
+          >
+            <template v-if="fileState.errorKind === 'crypto'">
+              <span class="font-medium">{{ t('chat.decryptError.title') }}</span>
+              <span class="text-[10px] opacity-70">{{ isOwn ? t('chat.decryptError.askSelf') : t('chat.decryptError.askResend') }}</span>
+            </template>
+            <span v-else class="font-medium">{{ t('message.videoDownloadFailed') }}</span>
+            <div class="mt-0.5 flex items-center gap-2">
+              <button type="button" class="rounded-md bg-color-bg-ac px-3 py-1 text-[11px] font-medium text-text-on-bg-ac-color" @click.stop="retryVideoDownload">{{ t('message.retry') }}</button>
+              <button v-if="fileState.errorKind === 'crypto'" type="button" class="text-[10px] underline opacity-70" @click.stop="reportDownloadProblem">{{ t('chat.decryptError.reportProblem') }}</button>
+            </div>
           </div>
           <button v-else type="button" class="flex h-full w-full items-center justify-center bg-neutral-grad-0 transition-colors hover:bg-neutral-grad-2" @click="handleVideoAudioLoad">
             <span class="flex h-14 w-14 items-center justify-center rounded-full bg-color-bg-ac/90 text-white shadow-lg">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4" /></svg>
+            </span>
+            <span
+              v-if="fileSizeText"
+              class="pointer-events-none absolute left-2 top-2 rounded-md bg-black/65 px-1.5 py-0.5 text-[11px] font-medium leading-none text-white"
+              data-testid="video-size-badge"
+            >
+              {{ fileSizeText }}
             </span>
           </button>
           <button
@@ -1384,8 +1459,11 @@ const replyPreviewSender = computed(() => {
           <div class="min-w-0 flex-1">
             <p class="truncate text-sm font-medium">{{ message.fileInfo?.name }}</p>
             <p class="text-xs opacity-60">
-              {{ formatSize(message.fileInfo?.size ?? 0) }}
-              <template v-if="fileIcon !== 'file'"> &middot; {{ fileIcon.toUpperCase() }}</template>
+              <template v-if="fileState.loading && (fileState.phase === 'decrypt' || fileState.progress !== null)">{{ downloadCaption }}</template>
+              <template v-else>
+                {{ formatSize(message.fileInfo?.size ?? 0) }}
+                <template v-if="fileIcon !== 'file'"> &middot; {{ fileIcon.toUpperCase() }}</template>
+              </template>
             </p>
           </div>
           <svg v-if="!fileState.loading" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 opacity-60">

@@ -12,6 +12,7 @@ import {
   prefetchNextVoice,
   type VoiceCursor,
 } from "./voice-queue";
+import { ensureVoiceWaveform } from "./voice-waveform";
 
 export type PlaybackState = "idle" | "loading" | "playing" | "paused" | "ended" | "failed";
 
@@ -25,6 +26,8 @@ export interface PlaybackInfo {
   listenedId: string;
   timestamp: number;
   senderId: string;
+  /** Stored waveform (0-1), for the mini-player. */
+  waveform?: number[];
 }
 
 /** What the player knows about the current message, for the mini-player and
@@ -41,6 +44,7 @@ export function playbackInfoFromMessage(message: Message, objectUrl: string, dur
     listenedId: message.id,
     timestamp: message.timestamp,
     senderId: message.senderId,
+    waveform: message.fileInfo?.waveform,
   };
 }
 
@@ -416,8 +420,11 @@ export function useAudioPlayback() {
       listenedId: info.listenedId,
       timestamp: info.timestamp,
       senderId: info.senderId,
+      waveform: info.waveform,
     };
     current.value = meta;
+    // A voice auto-advanced to has no bubble mounted to decode its waveform.
+    ensureVoiceWaveform(info.messageId, info.waveform, info.objectUrl);
     currentMessageId.value = info.messageId;
     currentRoomId.value = info.roomId;
     duration.value = info.duration;

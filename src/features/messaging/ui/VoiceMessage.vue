@@ -5,6 +5,7 @@ import { MessageStatus } from "@/entities/chat/model/types";
 import { useFileDownload, invalidateDownloadCache } from "../model/use-file-download";
 import { useAudioPlayback, playbackInfoFromMessage } from "../model/use-audio-playback";
 import { getChatDb } from "@/shared/lib/local-db";
+import { ensureVoiceWaveform, getVoiceWaveform, waveformBars } from "../model/voice-waveform";
 
 interface Props {
   message: Message;
@@ -88,31 +89,21 @@ const displayTime = computed(() => {
   return `${formatTime(playback.currentTime.value)} / ${formatTime(totalDuration.value)}`;
 });
 
-// Waveform — reactive to prop changes
-const waveform = ref<number[]>(props.message.fileInfo?.waveform ?? []);
-
-watch(
-  () => props.message.fileInfo?.waveform,
-  (newWaveform) => {
-    if (newWaveform && newWaveform.length > 0 && waveform.value.length === 0) {
-      waveform.value = newWaveform;
-    }
-  },
+// Stored waveform, or one decoded from the audio when the stored one is
+// missing or flat — as soon as the file is downloaded, not on the first play.
+const BARS = 40;
+const storedWaveform = computed(() => props.message.fileInfo?.waveform);
+const normalizedWaveform = computed(() =>
+  waveformBars(getVoiceWaveform(stableId.value, storedWaveform.value), BARS),
 );
 
-const BARS = 40;
-
-const normalizedWaveform = computed(() => {
-  if (waveform.value.length === 0) return Array(BARS).fill(0.15);
-  const src = waveform.value;
-  const result: number[] = [];
-  for (let i = 0; i < BARS; i++) {
-    const idx = Math.floor((i / BARS) * src.length);
-    result.push(src[idx] ?? 0.15);
-  }
-  const max = Math.max(...result, 0.01);
-  return result.map(v => Math.max(0.08, v / max));
-});
+watch(
+  () => fileState.value.objectUrl,
+  (url) => {
+    if (url) ensureVoiceWaveform(stableId.value, storedWaveform.value, url);
+  },
+  { immediate: true },
+);
 
 const currentProgress = computed(() => {
   if (!active.value) return 0;
@@ -121,31 +112,6 @@ const currentProgress = computed(() => {
 });
 
 const playedBars = computed(() => Math.floor(currentProgress.value * BARS));
-
-// Generate waveform from audio buffer when no stored data
-const generateWaveform = async (url: string) => {
-  if (waveform.value.length > 0) return;
-  const ctx = new AudioContext();
-  try {
-    const response = await fetch(url);
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = await ctx.decodeAudioData(arrayBuffer);
-    const channelData = buffer.getChannelData(0);
-    const samples: number[] = [];
-    const step = Math.floor(channelData.length / 50);
-    for (let i = 0; i < 50; i++) {
-      let sum = 0;
-      const start = i * step;
-      for (let j = start; j < start + step && j < channelData.length; j++) {
-        sum += Math.abs(channelData[j]);
-      }
-      samples.push(sum / step);
-    }
-    waveform.value = samples;
-  } catch { /* ignore */ } finally {
-    ctx.close();
-  }
-};
 
 // Toggle playback — MUST be synchronous from click to .play() to preserve
 // the user gesture chain on mobile WebViews. The file is preloaded on mount
@@ -174,9 +140,6 @@ const handleTogglePlay = async () => {
 
   // Synchronous call — no await between click event and .play()
   playback.togglePlay(playbackInfoFromMessage(props.message, url, totalDuration.value));
-
-  // Generate waveform in background (non-blocking)
-  generateWaveform(url);
 };
 
 // Error state: download failed or playback failed
