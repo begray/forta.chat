@@ -7,7 +7,7 @@ import { useAiChatStore } from "@/entities/ai-chat";
 import { useLocalAiStore } from "@/entities/local-ai";
 import { InviteModal } from "@/features/invite";
 import { useWalletStore, formatPkoin } from "@/features/wallet";
-import { useChatStore } from "@/entities/chat";
+import { useChatStore, resolveCachedRoomsAddress } from "@/entities/chat";
 import { useAuthStore } from "@/entities/auth";
 import { isNativePlatform, isLocalAiFeatureEnabled, logPlatformGate, isPkoinWalletEnabled } from "@/shared/lib/platform";
 import { ConnectionStatusHeader } from "@/features/sync-status";
@@ -52,7 +52,10 @@ onMounted(async () => {
   chatStore.loadCachedRooms();
   // Show persisted channel list immediately, then refresh from RPC in
   // the background — same pattern chatStore already uses for rooms (WEE-24).
-  await channelStore.hydrateFromDexie();
+  // Same cached address as loadCachedRooms, so on cold boot (DB singleton not
+  // up yet) channels are read in parallel with rooms and paint with them
+  // instead of after Matrix connects.
+  await channelStore.hydrateFromDexie(resolveCachedRoomsAddress());
   channelStore.fetchChannels(true);
 });
 

@@ -137,3 +137,47 @@ describe("PostPlayerModal article rendering", () => {
     expect(w.text()).toContain("Plain text message");
   });
 });
+
+describe("PostPlayerModal close", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  // The owner unmounts the modal on `close`, which cut the leave animation
+  // (the swipe-down slide-out on phones). Hide first, report after the leave.
+  it("hides the modal first and reports close only after the leave animation", async () => {
+    const ModalStub = {
+      name: "Modal",
+      props: ["show"],
+      emits: ["close", "closed"],
+      template: "<div v-if='show'><slot /></div>",
+    };
+    const w = mount(PostPlayerModal, {
+      props: { post: baseArticlePost as never, authorName: "X", authorAvatarUrl: "" },
+      global: { stubs: { ...stubs, Modal: ModalStub } },
+    });
+    const modal = w.findComponent({ name: "Modal" });
+    expect(modal.props("show")).toBe(true);
+
+    modal.vm.$emit("close");
+    await w.vm.$nextTick();
+    expect(modal.props("show")).toBe(false);
+    expect(w.emitted("close")).toBeUndefined();
+
+    modal.vm.$emit("closed");
+    expect(w.emitted("close")).toHaveLength(1);
+  });
+
+  it("Escape starts the same animated close", async () => {
+    const ModalStub = { name: "Modal", props: ["show"], template: "<div><slot /></div>" };
+    const w = mount(PostPlayerModal, {
+      props: { post: baseArticlePost as never, authorName: "X", authorAvatarUrl: "" },
+      global: { stubs: { ...stubs, Modal: ModalStub } },
+      attachTo: document.body,
+    });
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await w.vm.$nextTick();
+    expect(w.findComponent({ name: "Modal" }).props("show")).toBe(false);
+    w.unmount();
+  });
+});

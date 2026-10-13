@@ -993,6 +993,7 @@ export const en = {
 
   // ── Common ──
   "common.cancel": "Cancel",
+  "common.close": "Close",
   "common.loading": "Loading...",
   "common.unknownUser": "User",
   "common.encryptedChat": "Chat",
@@ -1029,6 +1030,7 @@ export const en = {
   "boot.authenticating": "Authenticating…",
   "boot.connectingServer": "Connecting to server…",
   "boot.syncingMessages": "Syncing messages…",
+  "boot.openingChats": "Opening chats…",
   "boot.loading": "Loading Forta Chat…",
   "boot.failed": "Failed to start Forta Chat",
   "boot.matrixUnreachable": "Couldn't reach the chat server",

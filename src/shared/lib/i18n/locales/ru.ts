@@ -995,6 +995,7 @@ export const ru: Record<TranslationKey, string> = {
 
   // ── Common ──
   "common.cancel": "Отмена",
+  "common.close": "Закрыть",
   "common.loading": "Загрузка...",
   "common.unknownUser": "Пользователь",
   "common.encryptedChat": "Чат",
@@ -1031,6 +1032,7 @@ export const ru: Record<TranslationKey, string> = {
   "boot.authenticating": "Аутентификация…",
   "boot.connectingServer": "Подключение к серверу…",
   "boot.syncingMessages": "Синхронизация сообщений…",
+  "boot.openingChats": "Открываем чаты…",
   "boot.loading": "Загрузка Forta Chat…",
   "boot.failed": "Не удалось запустить Forta Chat",
   "boot.matrixUnreachable": "Не удалось подключиться к серверу чата",

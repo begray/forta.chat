@@ -15,6 +15,8 @@ const stepKeys: Record<string, TranslationKey> = {
   auth: "boot.authenticating",
   matrix: "boot.connectingServer",
   sync: "boot.syncingMessages",
+  // Boot is done but the loader stays over the app for a moment (revealApp).
+  ready: "boot.openingChats",
 };
 
 const stepLabel = computed(() => {
@@ -64,8 +66,8 @@ const clearAndRetry = async () => {
 <template>
   <div class="fixed inset-0 flex items-center justify-center bg-[#011621]">
     <div class="flex flex-col items-center gap-4">
-      <!-- Booting: spinner + step label -->
-      <template v-if="state === 'booting'">
+      <!-- Booting (and the brief overlay after it, see revealApp): spinner + step label -->
+      <template v-if="state === 'booting' || state === 'ready'">
         <div
           class="contain-strict h-10 w-10 animate-spin rounded-full border-4 border-white/20 border-t-white"
         />
