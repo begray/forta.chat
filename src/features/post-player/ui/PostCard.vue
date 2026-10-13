@@ -288,8 +288,8 @@ onMounted(loadPostData);
       </div>
     </div>
 
-    <!-- Inline video — on native, tapping play opens the post modal instead of
-         embedding the iframe in the feed, which would lock feed scroll (WEE-74). -->
+    <!-- Video preview — tapping it opens the post modal, where the video plays
+         (all platforms; an in-feed player locked feed scroll, WEE-74). -->
     <VideoPlayer v-if="videoInfo" :url="post.url" inline @expand="showModal = true" />
 
     <!-- Image — tap opens the gallery with all of the post's images -->

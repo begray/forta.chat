@@ -479,6 +479,67 @@ describe("useAudioPlayback", () => {
       expect(playback.state.value).toBe("playing");
       video.remove();
     });
+
+    // Video.js keeps the <video> in a shadow root; the custom element host
+    // (`<hls-video>`) re-dispatches `play` on itself (PeerTubePlayer).
+    function customMediaHost(muted: boolean): HTMLElement {
+      const host: HTMLElement = document.createElement("x-media");
+      Object.assign(host, { muted, volume: 1, paused: false, pause: () => {} });
+      document.body.appendChild(host);
+      return host;
+    }
+
+    it("an audible custom media element (Video.js) pauses the voice", async () => {
+      await playback.play(baseInfo);
+      const host = customMediaHost(false);
+      host.dispatchEvent(new Event("play"));
+      expect(playback.state.value).toBe("paused");
+      host.remove();
+    });
+
+    it("a muted custom media element does not pause the voice", async () => {
+      await playback.play(baseInfo);
+      const host = customMediaHost(true);
+      host.dispatchEvent(new Event("play"));
+      expect(playback.state.value).toBe("playing");
+      host.remove();
+    });
+
+    it("a page video starting while the voice is still loading stops the voice", async () => {
+      mockPlay.mockReturnValueOnce(new Promise(() => {}));
+      void playback.play(baseInfo);
+      expect(playback.state.value).toBe("loading");
+
+      const video = document.createElement("video");
+      document.body.appendChild(video);
+      video.dispatchEvent(new Event("play"));
+
+      expect(playback.state.value).toBe("idle");
+      video.remove();
+    });
+
+    it("a voice starting pauses a playing page video (one sound at a time)", async () => {
+      const video = document.createElement("video");
+      const pause = vi.spyOn(video, "pause").mockImplementation(() => {});
+      Object.defineProperty(video, "paused", { configurable: true, get: () => false });
+      document.body.appendChild(video);
+      video.dispatchEvent(new Event("play"));
+
+      await playback.play(baseInfo);
+      (lastAudio.onplay as () => void)();
+
+      expect(pause).toHaveBeenCalled();
+      video.remove();
+    });
+
+    it("a `play` event from a non-media element is ignored", async () => {
+      await playback.play(baseInfo);
+      const div = document.createElement("div");
+      document.body.appendChild(div);
+      div.dispatchEvent(new Event("play"));
+      expect(playback.state.value).toBe("playing");
+      div.remove();
+    });
   });
 
   describe("playback speed", () => {

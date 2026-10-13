@@ -42,7 +42,7 @@
 | A | Сервер: `proxy_read_timeout`/`proxy_send_timeout` 300 s для `/_matrix/client/*/sync`, gzip для JSON, sync-worker Synapse, кэши | Нет (клиент не меняется) | Вне репозитория |
 | B | Клиент: в `doSyncRequest` при `syncToken === null` `localTimeoutMs` ~5 мин (правка форка SDK, 2–3 строки) | Низкий | Не начато |
 | C | Lazy loading участников (этот план, разделы 4–7) | Высокий: крипта | Не начато |
-| D | Sliding sync (MSC4186, Synapse ≥ 1.114) | Большая работа; проверить поддержку в форке SDK | Идея |
+| D | Sliding sync (MSC4186, Synapse ≥ 1.114) | Большая работа; форк его не поддерживает | Вынесено в [2026-10-13-sdk-upstream-sliding-sync.md](2026-10-13-sdk-upstream-sliding-sync.md) |
 
 Ещё: если большая часть 5000 комнат — мёртвые группы, `leave` + `forget` на стороне аккаунта сразу облегчит sync.
 
@@ -451,4 +451,4 @@ state. Групповая расшифровка берёт хэш из собы
 ## 10. Открытые вопросы
 
 - Режет ли прокси на 60 s (этап 0 / Network).
-- Поддерживает ли форк SDK simplified sliding sync (вариант D).
+- ~~Поддерживает ли форк SDK simplified sliding sync (вариант D).~~ Нет, см. 2026-10-13-sdk-upstream-sliding-sync.md.

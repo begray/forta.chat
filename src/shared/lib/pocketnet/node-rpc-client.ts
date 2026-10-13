@@ -34,6 +34,11 @@ export interface PocketnetRpcRequest {
   node?: string;
   /** Override the node pool (defaults to the configured pool). */
   nodes?: string[];
+  /**
+   * `rpc-ex` answers the same methods with related data attached (e.g.
+   * getprofilefeed: the PeerTube video objects and the author profiles).
+   */
+  endpoint?: "rpc" | "rpc-ex";
 }
 
 /**
@@ -51,7 +56,7 @@ export async function callPocketnetRpc<T = unknown>(
   if (req.node) {
     body.options = { node: req.node };
   }
-  const json = await rpcFetchWithFailover(`/rpc/${req.method}`, body, {
+  const json = await rpcFetchWithFailover(`/${req.endpoint ?? "rpc"}/${req.method}`, body, {
     nodes: req.nodes ?? getConfiguredPocketnetNodes(),
   });
   return json as RpcEnvelope<T> & Partial<T>;

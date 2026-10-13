@@ -869,6 +869,11 @@ export const ru: Record<TranslationKey, string> = {
   "postPlayer.prevImage": "Предыдущее изображение",
   "postPlayer.nextImage": "Следующее изображение",
   "postPlayer.imageCount": "Фото: {count}",
+  "postPlayer.playVideo": "Воспроизвести видео",
+  "postPlayer.videoUnavailable": "Видео не воспроизводится здесь",
+  "postPlayer.openVideoExternally": "Открыть видео в браузере",
+  "video.playbackError": "Ошибка воспроизведения",
+  "video.retry": "Повторить",
 
   // ── Registration ──
   "register.title": "Создать аккаунт",

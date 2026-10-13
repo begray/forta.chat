@@ -31,6 +31,12 @@ Detail reference for [AGENTS.md](../../AGENTS.md). Versions are ranges from `pac
 - `@capgo/capacitor-share-target`, `@capgo/capacitor-incoming-call-kit`, `@capacitor-community/sqlite`, `@capacitor-community/safe-area`
 - Crypto: `@noble/secp256k1`, `miscreant`, `pbkdf2`, `bn.js`, `create-hash`; `underscore` in `matrix-crypto.ts` for every ordering step that feeds key derivation (same library as bastyon-chat `pcrypto.js`, so sort/uniq/iteration semantics match exactly)
 - UI/media: `emoji-kitchen-mart`, `virtua`, `vue-virtual-scroller`, `heic2any`, `audio-recorder-polyfill`, `file-saver`
+- Video: `@videojs/html` 10.0.1 (exact) — one player for PeerTube post videos (`PeerTubePlayer.vue`, HLS) and
+  video attachments in messages (`MessageBubble.vue`, plain `<video>` in the skin), shell `VideoJsFrame.vue`,
+  skin subclass `<forta-video-skin>` (`shared/lib/video-js/forta-video-skin.ts`, overrides go into its shadow root).
+  Lazy chunk `video-js` via `prepareVideoJs()`, only after `canUseModernPlayer()` (Chrome 111 / Safari 16.4);
+  older WebViews keep native controls / `FeedVideoPlayer`. Custom element tags are listed in `vite.config.ts`
+  (`isCustomElement`). One sound at a time app-wide: `shared/lib/active-video-player.ts`.
 - Tor: `socks-proxy-agent`; forms: `vee-validate` + `@vee-validate/zod` + `zod`
 - Local AI (optional/native): `local-ai` (git dependency `maxgithubprofile/local-ai`, pinned commit), `llama-cpp-pro` (git dependency, fork `j-bitmaker/llama-cpp-pro`, tag `v0.2.4-local-ai.2`)
 

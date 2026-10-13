@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { parseVideoUrl, fetchPeerTubeThumb, fetchPeerTubeFileUrl } from "@/shared/lib/video-embed";
+import { parseVideoUrl, fetchPeerTubeSources, type PeerTubeSources } from "@/shared/lib/video-embed";
 import { useAndroidBackHandler } from "@/shared/lib/composables/use-android-back-handler";
 import { isNative } from "@/shared/lib/platform";
 import { openExternalUrl } from "@/shared/lib/open-external-url";
+import { canUseModernPlayer } from "@/shared/lib/video-js/video-player-support";
+import { videoFrame } from "@/shared/lib/video-frame";
 import FeedVideoPlayer from "@/shared/ui/feed-video-player/FeedVideoPlayer.vue";
+import PeerTubePlayer from "./PeerTubePlayer.vue";
 
 interface Props {
   url: string;
+  /** Feed tile: a tap opens the post modal instead of playing in place. */
   inline?: boolean;
   /** Start playback on mount (modal opened from a feed tap — WEE-82/#963). */
   autoplay?: boolean;
@@ -14,33 +18,35 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), { inline: false, autoplay: false });
 
-// Inline (channel feed) playback asks the host to open the post instead of
-// embedding the iframe in the feed — see `play()` for why (WEE-74).
 const emit = defineEmits<{ expand: [] }>();
+const { t } = useI18n();
 
 const videoInfo = computed(() => parseVideoUrl(props.url));
+const isPeerTube = computed(() => videoInfo.value?.type === "peertube");
+
+/**
+ * PeerTube playback ladder (no iframe — the embed ignores autoplay on iOS and
+ * locks feed gestures on Android):
+ * 1. `hls`  — Video.js HLS player, adaptive quality, PiP;
+ * 2. `file` — plain <video> with one mp4, for WebViews Video.js can't run on
+ *            or when HLS fails;
+ * 3. `error` — nothing plays here; offer the video's page externally.
+ */
+type PeerTubeMode = "loading" | "hls" | "file" | "error";
+const peerTubeMode = ref<PeerTubeMode>("loading");
+const sources = ref<PeerTubeSources | null>(null);
+const peertubeThumb = ref("");
+
+// Feed tile and iframe (YouTube / Vimeo) state
 const playing = ref(false);
 const error = ref(false);
 const iframeLoaded = ref(false);
 const spinnerTimedOut = ref(false);
-const peertubeThumb = ref("");
 const isFullscreen = ref(false);
-
-// WEE-82 (#963/#964): direct media file resolved from the PeerTube API. With
-// it we render a native <video> instead of the cross-origin iframe — that's
-// what makes single-tap start and position memory possible at all (the iframe
-// can neither autoplay on Android nor expose currentTime). Stays null for
-// YouTube/Vimeo and when the API exposes no file → iframe fallback below.
-const nativeSrc = ref<string | null>(null);
-
-// Don't switch players mid-flight: if the user already tapped play while the
-// file URL was being resolved, the iframe is up — keep it.
-const nativePlayerActive = computed(() => !!nativeSrc.value && !playing.value);
 
 // Belt-and-suspenders for old Android WebViews where iframe @load may never
 // fire: stop showing our overlay spinner after this long so it can't become
-// the very "eternal spinner" this fix removes. The "Open externally" fallback
-// stays available regardless.
+// an "eternal spinner". The "Open externally" fallback stays available.
 const SPINNER_TIMEOUT_MS = 10_000;
 let spinnerTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -52,19 +58,18 @@ const clearSpinnerTimer = () => {
 };
 
 const thumbUrl = computed(() => peertubeThumb.value || videoInfo.value?.thumbUrl || "");
+// Modal player container sized by the video's own ratio (vertical < 0.9).
+const peerTubeFrame = computed(() => videoFrame(sources.value?.aspectRatio));
+const externalUrl = computed(() => videoInfo.value?.watchUrl ?? props.url);
 
 // Android WebView blocks autoplay for cross-origin sandboxed iframes, so the
-// embed silently never starts and its own spinner spins forever (WEE-70). On
-// native we drop ?autoplay=1 and let the user tap play inside the embed; on
-// web/desktop autoplay works as before.
+// embed silently never starts (WEE-70). On native we drop ?autoplay=1 and let
+// the user tap play inside the embed; on web/desktop autoplay works.
 const embedSrc = computed(() => {
   const base = videoInfo.value?.embedUrl ?? "";
   return isNative ? base : `${base}?autoplay=1`;
 });
 
-// Our own overlay spinner is only shown while the iframe is still fetching.
-// Once @load fires we hide it; if it never loads, the "Open externally"
-// fallback is available from the first tap as a safety net.
 const showSpinner = computed(
   () => playing.value && !iframeLoaded.value && !error.value && !spinnerTimedOut.value,
 );
@@ -73,36 +78,43 @@ const onFullscreenChange = () => {
   isFullscreen.value = !!document.fullscreenElement;
 };
 
-// The PeerTube file fetch can outlive a quickly-closed modal — its callback
-// must not arm timers on a dead component.
+// Resolution can outlive a quickly-closed modal.
 let unmounted = false;
+
+function pickPeerTubeMode(s: PeerTubeSources): PeerTubeMode {
+  if (s.playlistUrl && canUseModernPlayer()) return "hls";
+  if (s.fileUrl) return "file";
+  return "error";
+}
+
+function resolvePeerTube(apiUrl: string, fresh = false): void {
+  peerTubeMode.value = "loading";
+  void fetchPeerTubeSources(apiUrl, { fresh }).then((s) => {
+    if (unmounted) return;
+    if (s.thumbUrl) peertubeThumb.value = s.thumbUrl;
+    sources.value = s;
+    // Feed tiles only need the preview; the modal plays.
+    if (!props.inline) peerTubeMode.value = pickPeerTubeMode(s);
+  });
+}
+
+/** Nothing played — the API was unreachable, had nothing yet, or its URLs
+ *  failed. Ask again, past the cache. */
+const retryPeerTube = () => {
+  const apiUrl = videoInfo.value?.apiUrl;
+  if (apiUrl) resolvePeerTube(apiUrl, true);
+};
 
 onMounted(() => {
   document.addEventListener("fullscreenchange", onFullscreenChange);
 
   const info = videoInfo.value;
   if (info?.type === "peertube" && info.apiUrl) {
-    void fetchPeerTubeThumb(info.apiUrl).then((thumb) => {
-      peertubeThumb.value = thumb;
-    });
-  }
-
-  // WEE-82: native <video> path for PeerTube on native. Inline feed tiles
-  // never play in place (WEE-74 routes them to the post modal), so don't
-  // spend a request there.
-  if (isNative && !props.inline && info?.type === "peertube" && info.apiUrl) {
-    void fetchPeerTubeFileUrl(info.apiUrl).then((fileUrl) => {
-      if (unmounted) return;
-      nativeSrc.value = fileUrl;
-      // No direct file → iframe fallback. Still honour autoplay by loading
-      // the embed immediately so the user only deals with the embed's own
-      // play button instead of our overlay + the embed (#963).
-      if (!fileUrl && props.autoplay) play();
-    });
+    resolvePeerTube(info.apiUrl);
     return;
   }
 
-  if (props.autoplay) play();
+  if (props.autoplay && !props.inline) play();
 });
 
 onUnmounted(() => {
@@ -111,14 +123,12 @@ onUnmounted(() => {
   clearSpinnerTimer();
 });
 
-// A resolved file URL can still fail at playback time (expired link, fMP4 an
-// old WebView can't decode). When the native player exhausts its retries,
-// fall back to the iframe embed — clunkier, but it always works (pre-WEE-82
-// behavior). play() mounts the embed immediately so the user isn't bounced
-// back to the overlay they already tapped through.
-const onNativeFatalError = () => {
-  nativeSrc.value = null;
-  play();
+const onHlsFatalError = () => {
+  peerTubeMode.value = sources.value?.fileUrl ? "file" : "error";
+};
+
+const onFileFatalError = () => {
+  peerTubeMode.value = "error";
 };
 
 // Android back: exit iframe fullscreen instead of closing the post.
@@ -132,15 +142,10 @@ useAndroidBackHandler("post-video-fullscreen", 100, () => {
 });
 
 const play = () => {
-  // WEE-74: a playing cross-origin sandboxed iframe captures Android WebView
-  // touch gestures over its area, so inside the channel feed the feed stops
-  // scrolling and tap-to-pause never reaches the embed (regression surfaced
-  // once WEE-70 made the embed actually reach a playing state). Native inline
-  // playback also needs a tap *inside* the iframe to start (no autoplay), which
-  // is exactly what locks the gesture. Route feed playback to the post modal,
-  // where the iframe lives in its own scroll context and can't lock the feed.
-  // Web/desktop (mouse) keeps inline playback as before.
-  if (props.inline && isNative) {
+  // Feed tiles never play in place, on any platform: the post modal is where
+  // video plays (WEE-74 — an embedded player locked the feed's scroll and
+  // gestures on Android).
+  if (props.inline) {
     emit("expand");
     return;
   }
@@ -168,22 +173,70 @@ const onIframeError = () => {
 // Route through openExternalUrl: on native a plain <a target="_blank"> is a
 // no-op inside Capacitor's WebView, so we launch a Custom Tab instead.
 const openExternal = () => {
-  void openExternalUrl(props.url);
+  void openExternalUrl(externalUrl.value);
 };
 </script>
 
 <template>
-  <!-- WEE-82: native player for PeerTube on native — single-tap + position memory -->
-  <FeedVideoPlayer
-    v-if="videoInfo && nativePlayerActive"
-    data-testid="native-player"
-    :src="nativeSrc"
-    :poster="thumbUrl"
-    :autoplay="autoplay"
-    :start-muted="false"
-    :persist-key="url"
-    @fatal-error="onNativeFatalError"
-  />
+  <!-- PeerTube in the modal: HLS player → plain <video> → open externally -->
+  <template v-if="videoInfo && isPeerTube && !inline">
+    <PeerTubePlayer
+      v-if="peerTubeMode === 'hls' && sources?.playlistUrl"
+      :src="sources.playlistUrl"
+      :poster="thumbUrl"
+      :autoplay="autoplay"
+      :persist-key="url"
+      :aspect-ratio="sources.aspectRatio"
+      @fatal-error="onHlsFatalError"
+    />
+    <FeedVideoPlayer
+      v-else-if="peerTubeMode === 'file' && sources?.fileUrl"
+      data-testid="file-player"
+      :class="peerTubeFrame.class"
+      :aspect-ratio="peerTubeFrame.style.aspectRatio"
+      :src="sources.fileUrl"
+      :poster="thumbUrl"
+      :autoplay="autoplay"
+      :start-muted="false"
+      :persist-key="url"
+      @fatal-error="onFileFatalError"
+    />
+    <div
+      v-else
+      class="relative overflow-hidden rounded-lg bg-black"
+      :class="peerTubeFrame.class"
+      :style="peerTubeFrame.style"
+    >
+      <img v-if="thumbUrl" :src="thumbUrl" alt="" class="h-full w-full object-contain opacity-60" />
+      <div
+        v-if="peerTubeMode === 'loading'"
+        data-testid="video-loading"
+        class="absolute inset-0 flex items-center justify-center"
+      >
+        <div class="contain-strict h-10 w-10 animate-spin rounded-full border-[3px] border-white/30 border-t-white" />
+      </div>
+      <div v-else class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/60 px-4 text-center">
+        <span class="text-sm text-white/80">{{ t("postPlayer.videoUnavailable") }}</span>
+        <button
+          data-testid="video-retry"
+          class="rounded-md bg-white/20 px-4 py-1.5 text-sm text-white hover:bg-white/30"
+          @click.stop="retryPeerTube"
+        >
+          {{ t("video.retry") }}
+        </button>
+        <a
+          data-testid="video-external"
+          :href="externalUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-sm text-color-txt-ac underline"
+          @click.stop.prevent="openExternal"
+        >{{ t("postPlayer.openVideoExternally") }}</a>
+      </div>
+    </div>
+  </template>
+
+  <!-- Feed tile (any provider) and YouTube / Vimeo in the modal -->
   <div
     v-else-if="videoInfo"
     class="relative overflow-hidden rounded-lg bg-black"
@@ -229,6 +282,7 @@ const openExternal = () => {
 
       <button
         class="absolute inset-0 flex items-center justify-center bg-black/30 transition-colors hover:bg-black/20"
+        :aria-label="t('postPlayer.playVideo')"
         @click.stop="play"
       >
         <div class="flex h-12 w-12 items-center justify-center rounded-full bg-white/90 shadow-lg">
@@ -242,12 +296,12 @@ const openExternal = () => {
     <div v-if="error" class="absolute inset-0 flex items-center justify-center bg-black">
       <a
         data-testid="video-external"
-        :href="url"
+        :href="externalUrl"
         target="_blank"
         rel="noopener noreferrer"
         class="text-sm text-color-txt-ac underline"
         @click.stop.prevent="openExternal"
-      >Open video externally</a>
+      >{{ t("postPlayer.openVideoExternally") }}</a>
     </div>
   </div>
 </template>

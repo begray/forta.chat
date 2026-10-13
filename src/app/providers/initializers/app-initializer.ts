@@ -21,6 +21,14 @@ import {
   unwrapRpcPayload,
   buildNodeBaseUrls,
 } from "@/shared/lib/pocketnet";
+import { primePeerTubeSources } from "@/shared/lib/video-embed";
+
+/** One page of `getprofilefeed`: posts, plus the profiles the page mentions. */
+export interface ProfileFeedPage {
+  contents: unknown[];
+  /** Raw `getuserprofile` rows (post authors, last commenters) — rpc-ex only. */
+  users: Record<string, unknown>[];
+}
 
 export type EditUserDataResult =
   | { success: true; action: unknown }
@@ -1433,37 +1441,56 @@ export class AppInitializer {
     }
   }
 
+  /**
+   * One page of an author's feed. Asked through `rpc-ex`, which also returns
+   * the PeerTube video objects of the page (seeded into the playback sources
+   * cache — no per-video API call) and profiles of the authors involved (post
+   * authors, last commenters). Nodes without `rpc-ex` fall back to `rpc`.
+   */
   async getProfileFeed(
     authorAddress: string,
     options?: { height?: number; startTxid?: string; count?: number }
-  ): Promise<any[]> {
+  ): Promise<ProfileFeedPage> {
+    const opts = options ?? {};
+    const parameters = [
+      Number(opts.height ?? 0),
+      opts.startTxid ?? "",
+      opts.count ?? 10,
+      "",   // lang
+      [],   // tagsfilter
+      [],   // type
+      [],   // reserved
+      [],   // reserved
+      [],   // tagsexcluded
+      "",   // keyword
+      authorAddress,
+    ];
+    type FeedPayload = unknown[] | { contents?: unknown[]; videos?: Record<string, unknown>; users?: unknown[] };
+    const ask = (endpoint: "rpc" | "rpc-ex") =>
+      callPocketnetRpc<FeedPayload>({ method: "getprofilefeed", parameters, endpoint });
     try {
-      const opts = options ?? {};
-      const envelope = await callPocketnetRpc<unknown[] | { contents?: unknown[] }>({
-        method: "getprofilefeed",
-        parameters: [
-          Number(opts.height ?? 0),
-          opts.startTxid ?? "",
-          opts.count ?? 10,
-          "",   // lang
-          [],   // tagsfilter
-          [],   // type
-          [],   // reserved
-          [],   // reserved
-          [],   // tagsexcluded
-          "",   // keyword
-          authorAddress,
-        ],
-      });
+      let envelope;
+      try {
+        envelope = await ask("rpc-ex");
+        if (envelope.error) throw new Error(String(envelope.error));
+      } catch (e) {
+        console.warn("[appInit] getProfileFeed rpc-ex failed, plain rpc:", e);
+        envelope = await ask("rpc");
+      }
       if (envelope.error) {
         console.error("[appInit] getProfileFeed RPC error:", envelope.error);
-        return [];
+        return { contents: [], users: [] };
       }
       const result = unwrapRpcPayload(envelope);
-      return Array.isArray(result) ? result : (result as { contents?: unknown[] })?.contents ?? [];
+      if (Array.isArray(result)) return { contents: result, users: [] };
+      primePeerTubeSources(result?.videos);
+      return {
+        contents: result?.contents ?? [],
+        users: Array.isArray(result?.users) ? (result.users as Record<string, unknown>[]) : [],
+      };
     } catch (e) {
       console.error("[appInit] getProfileFeed error (all nodes failed):", e);
-      return [];
+      return { contents: [], users: [] };
     }
   }
 

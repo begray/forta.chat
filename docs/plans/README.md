@@ -17,6 +17,8 @@ Commands inside plans (e.g. `npm run lint`, old paths like `com/bastyon/chat`, `
 
 | Plan | State | What is open |
 |---|---|---|
+| [2026-10-13-peertube-hls-player](2026-10-13-peertube-hls-player.md) | stages 0–6 in code (not committed) | 7: device checks (`manual-verification.md`) |
+| [2026-10-13-sdk-upstream-sliding-sync](2026-10-13-sdk-upstream-sliding-sync.md) | plan only; stage 0 decided (cache variant A) | stages 1–8: fork rebase in `C:\inetpub2022\matrix-js-sdk`, local test on Forta, usage docs, npm publish (owner) |
 | [2026-10-11-resumable-media-download](2026-10-11-resumable-media-download.md) | plan only | everything; section 8 first (confirm prod runs `rebase/v1.148.0`, nginx owner) |
 | [2026-10-10-delete-account](2026-10-10-delete-account.md) | stages 1–3 done | 4 (check on a test account, `manual-verification.md`) |
 | [2026-10-08-background-voice-playback](2026-10-08-background-voice-playback.md) | stages 0–5 done (stage 0: plan defaults) | 6 (Android FGS; device prototype first), 7 (iOS audio session; check stage 5 lock screen first), 8 |

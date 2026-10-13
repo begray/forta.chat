@@ -6,6 +6,8 @@ import Components from "unplugin-vue-components/vite";
 import { defineConfig } from "vite";
 import { manualChunks } from "./scripts/lib/vite-manual-chunks.mjs";
 
+const VIDEO_JS_ELEMENTS = new Set(["media-i18n", "video-player", "forta-video-skin", "hls-video"]);
+
 export default defineConfig({
   base: "./",
   test: {
@@ -40,7 +42,14 @@ export default defineConfig({
     server: { deps: { inline: ["local-ai"] } },
   },
   plugins: [
-    vue(),
+    vue({
+      template: {
+        compilerOptions: {
+          // Video.js 10 web components (PeerTubePlayer); list only the tags used.
+          isCustomElement: (tag) => VIDEO_JS_ELEMENTS.has(tag),
+        },
+      },
+    }),
     // Tests import Node CLI scripts (scripts/*.mjs) that start with
     // `#!/usr/bin/env node`. Vitest's transform puts its import-interop lines
     // above the shebang, and the module no longer parses ("Invalid character

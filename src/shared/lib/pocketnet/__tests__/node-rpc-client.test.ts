@@ -86,4 +86,19 @@ describe("callPocketnetRpc", () => {
     });
     vi.unstubAllGlobals();
   });
+
+  it("asks /rpc-ex/<method> when the extended endpoint is requested", async () => {
+    const urls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      urls.push(url);
+      return fakeResponse(200, { result: [] });
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+
+    await callPocketnetRpc({ method: "getprofilefeed", parameters: [1], endpoint: "rpc-ex" });
+    await callPocketnetRpc({ method: "getprofilefeed", parameters: [1] });
+    expect(urls[0]).toMatch(/\/rpc-ex\/getprofilefeed$/);
+    expect(urls[1]).toMatch(/\/rpc\/getprofilefeed$/);
+    vi.unstubAllGlobals();
+  });
 });

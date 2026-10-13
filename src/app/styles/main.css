@@ -416,3 +416,21 @@ a {
   white-space: nowrap;
   width: 1px;
 }
+
+/* ── Video.js post player (PeerTubePlayer) ── */
+forta-video-skin {
+  --media-accent-color: rgb(var(--color-bg-ac));
+  --media-accent-text-color: rgb(var(--text-on-bg-ac-color));
+  --media-border-radius: theme("borderRadius.lg");
+  --media-font-family: inherit;
+}
+forta-video-skin:not(:defined) {
+  @apply invisible;
+}
+
+/* Android Activity PiP (android-pip.ts): the whole WebView becomes the
+   floating window, so the player must cover the viewport while it lasts. */
+html[data-native-pip] forta-video-skin[data-native-pip] {
+  @apply fixed inset-0 z-[2147483647] h-screen w-screen rounded-none bg-black;
+  --media-border-radius: 0;
+}

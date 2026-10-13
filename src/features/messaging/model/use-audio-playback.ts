@@ -13,6 +13,7 @@ import {
   type VoiceCursor,
 } from "./voice-queue";
 import { ensureVoiceWaveform } from "./voice-waveform";
+import { claimActivePlayer, releaseActivePlayer } from "@/shared/lib/active-video-player";
 
 export type PlaybackState = "idle" | "loading" | "playing" | "paused" | "ended" | "failed";
 
@@ -267,7 +268,15 @@ function cleanup() {
   duration.value = 0;
 }
 
+// The voice's <audio> lives outside the DOM, so the app-wide "one sound at a
+// time" listener can't see it — it claims the slot itself (from play(), while
+// still loading, and on every `play`), and a video that starts later stops it
+// through this handle.
+const VOICE_PLAYER = { pause: () => interruptVoicePlayback() };
+
 function setupAudioListeners(el: HTMLAudioElement) {
+  el.onplay = () => claimActivePlayer(VOICE_PLAYER);
+  el.onpause = () => releaseActivePlayer(VOICE_PLAYER);
   el.ontimeupdate = () => {
     currentTime.value = el.currentTime;
   };
@@ -353,23 +362,10 @@ export function interruptVoicePlayback(): void {
   }
 }
 
-// Any page media element that becomes audible interrupts the voice: it starts
-// playing unmuted (MediaViewer, post and feed players, call media), or it is
-// already playing muted and gets unmuted (video circles autoplay muted and
-// unmute on tap, without a new `play`). Media events do not bubble, hence the
-// capture phase. The voice's own element lives outside the DOM; detached
-// previews call interruptVoicePlayback() themselves.
-if (typeof document !== "undefined") {
-  const onMediaEvent = (e: Event) => {
-    const el = e.target;
-    if (typeof HTMLMediaElement === "undefined" || !(el instanceof HTMLMediaElement)) return;
-    if (el === audio.value || el.muted || el.volume === 0) return;
-    if (e.type === "volumechange" && el.paused) return;
-    interruptVoicePlayback();
-  };
-  document.addEventListener("play", onMediaEvent, true);
-  document.addEventListener("volumechange", onMediaEvent, true);
-}
+// Any page media element that becomes audible (MediaViewer, post and feed
+// players, an unmuted video circle) stops the voice through the app-wide
+// one-sound rule (active-video-player) and VOICE_PLAYER. Calls interrupt it
+// separately (VoicePlayerBar).
 
 /** Logout: stop the voice and forget this account's session listened marks,
  *  so the next account's bubbles do not inherit them. */
@@ -395,6 +391,9 @@ export function useAudioPlayback() {
     playGeneration++;
     // Unlock audio session on first play (must be synchronous in user gesture)
     unlockAudio();
+    // Take the one-sound slot now, while still loading: a video that starts
+    // meanwhile stops this voice instead of being talked over.
+    claimActivePlayer(VOICE_PLAYER);
 
     if (currentMessageId.value === info.messageId && audio.value && state.value === "paused") {
       await audio.value.play();
@@ -493,6 +492,7 @@ export function useAudioPlayback() {
     if (!audio.value || state.value !== "paused") return;
     // Same as play(): re-arms the iOS audio session after backgrounding.
     unlockAudio();
+    claimActivePlayer(VOICE_PLAYER);
     try {
       await audio.value.play();
       state.value = "playing";

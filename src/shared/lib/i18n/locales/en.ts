@@ -867,6 +867,11 @@ export const en = {
   "postPlayer.prevImage": "Previous image",
   "postPlayer.nextImage": "Next image",
   "postPlayer.imageCount": "{count} photos",
+  "postPlayer.playVideo": "Play video",
+  "postPlayer.videoUnavailable": "The video can't be played here",
+  "postPlayer.openVideoExternally": "Open video externally",
+  "video.playbackError": "Playback error",
+  "video.retry": "Retry",
 
   // ── Registration ──
   "register.title": "Create Account",

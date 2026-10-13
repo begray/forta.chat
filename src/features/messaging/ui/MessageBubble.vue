@@ -18,6 +18,8 @@ import {
   type VideoPlaybackError,
 } from "../model/video-error";
 import { computeVideoAspectStyle, resolveVideoDimensions } from "../model/video-layout";
+import { useBubbleVideoJs } from "../model/use-bubble-video-js";
+import VideoJsFrame from "@/shared/ui/video-js-frame/VideoJsFrame.vue";
 import MessageContent from "./MessageContent.vue";
 import EncryptedMessageNotice from "./EncryptedMessageNotice.vue";
 import MessageStatusIcon from "./MessageStatusIcon.vue";
@@ -251,6 +253,11 @@ const hasFileInfo = computed(() => !!props.message.fileInfo);
 // and images show an infinite spinner.
 const fileCacheKey = computed(() => props.message._key || props.message.id);
 const fileState = computed(() => getState(fileCacheKey.value));
+// Same Video.js player as post videos, for video attachments.
+const { isVideoJsEnabled, isVideoShellReady } = useBubbleVideoJs(
+  computed(() => fileState.value.objectUrl),
+  () => props.message.type === MessageType.video,
+);
 
 const inlineVideoRef = ref<HTMLVideoElement | null>(null);
 useVideoStatePreservation(inlineVideoRef, fileCacheKey, { dontResumePlay: true });
@@ -461,8 +468,11 @@ const retryVideoPlayback = () => {
 // Disarming happens on `loadedmetadata` / `canplay` (success) or in
 // `onInlineVideoError` (failure) — no leak even if the bubble unmounts
 // mid-load, because `onBeforeUnmount` also calls `clearVideoLoadTimer`.
+// The <video> mounts only once the player shell is decided (Video.js chunk
+// loaded, or native fallback) — the deadline starts then, not while the chunk
+// is still downloading.
 watch(
-  () => fileState.value.objectUrl,
+  () => (isVideoShellReady.value ? fileState.value.objectUrl : null),
   (url, prevUrl) => {
     if (url === prevUrl) return;
     if (props.message.type !== MessageType.video) return;
@@ -1178,24 +1188,32 @@ const replyPreviewSender = computed(() => {
           :style="videoAspectStyle"
           data-testid="video-bubble-frame"
         >
-          <video
-            v-if="fileState.objectUrl"
-            ref="inlineVideoRef"
-            :src="fileState.objectUrl"
-            :poster="videoPosterUrl ?? undefined"
-            :controls="isVideoPlaying"
-            :controlslist="isVideoPlaying ? 'nodownload' : undefined"
-            playsinline
-            preload="metadata"
-            draggable="false"
-            class="block h-full w-full object-contain select-none [-webkit-touch-callout:none] [-webkit-user-drag:none]"
-            @loadedmetadata="onInlineVideoLoadedMetadata"
-            @canplay="onInlineVideoCanPlay"
-            @error="onInlineVideoError"
-            @play="isVideoPlaying = true"
-            @pause="isVideoPlaying = false"
-            @ended="isVideoPlaying = false"
-          />
+          <VideoJsFrame
+            v-if="fileState.objectUrl && isVideoShellReady"
+            :enabled="isVideoJsEnabled"
+          >
+            <video
+              ref="inlineVideoRef"
+              :src="fileState.objectUrl"
+              :poster="videoPosterUrl ?? undefined"
+              :controls="isVideoPlaying && !isVideoJsEnabled"
+              :controlslist="isVideoPlaying && !isVideoJsEnabled ? 'nodownload' : undefined"
+              playsinline
+              preload="metadata"
+              draggable="false"
+              class="block h-full w-full object-contain select-none [-webkit-touch-callout:none] [-webkit-user-drag:none]"
+              @loadedmetadata="onInlineVideoLoadedMetadata"
+              @canplay="onInlineVideoCanPlay"
+              @error="onInlineVideoError"
+              @play="isVideoPlaying = true"
+              @pause="isVideoPlaying = false"
+              @ended="isVideoPlaying = false"
+            />
+          </VideoJsFrame>
+          <!-- File is here, the player chunk is still loading -->
+          <div v-else-if="fileState.objectUrl" class="flex h-full w-full items-center justify-center" data-testid="video-player-loading">
+            <div class="contain-strict h-8 w-8 animate-spin rounded-full border-[3px] border-white/30 border-t-white" />
+          </div>
           <div v-else-if="fileState.loading" class="flex h-full w-full items-center justify-center bg-neutral-grad-0">
             <MediaDownloadProgress
               :phase="fileState.phase"
@@ -1236,7 +1254,7 @@ const replyPreviewSender = computed(() => {
             </span>
           </button>
           <button
-            v-if="fileState.objectUrl && !isVideoPlaying && !isUploading && !isSending && !isFailed && !videoPlaybackError"
+            v-if="fileState.objectUrl && isVideoShellReady && !isVideoPlaying && !isUploading && !isSending && !isFailed && !videoPlaybackError"
             type="button"
             class="absolute inset-0 flex items-center justify-center bg-black/15 transition-colors hover:bg-black/25"
             aria-label="Play video"
