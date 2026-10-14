@@ -39,6 +39,7 @@ import { useThemeStore } from "@/entities/theme";
 import { hexDecode } from "@/shared/lib/matrix/functions";
 import { countEmojiOnly, JUMBO_EMOJI_MAX } from "@/shared/lib/emoji-only";
 import { getUserDisplayNameForUI } from "@/entities/chat";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 // Responsive max image width: clamp to ~78% of viewport on small screens
 const viewportW = ref(typeof window !== "undefined" ? window.innerWidth : 800);
@@ -1264,7 +1265,7 @@ const replyPreviewSender = computed(() => {
             <video
               ref="inlineVideoRef"
               :src="fileState.objectUrl"
-              :poster="videoPosterUrl ?? undefined"
+              :poster="videoPosterUrl ?? BLANK_VIDEO_POSTER"
               :controls="isVideoPlaying && !isVideoJsEnabled"
               :controlslist="isVideoPlaying && !isVideoJsEnabled ? 'nodownload' : undefined"
               playsinline
@@ -1324,7 +1325,7 @@ const replyPreviewSender = computed(() => {
             </span>
           </button>
           <button
-            v-if="fileState.objectUrl && isVideoShellReady && !isVideoPlaying && !isUploading && !isSending && !isFailed && !videoPlaybackError"
+            v-if="fileState.objectUrl && isVideoShellReady && !isVideoJsEnabled && !isVideoPlaying && !isUploading && !isSending && !isFailed && !videoPlaybackError"
             type="button"
             class="absolute inset-0 flex items-center justify-center bg-black/15 transition-colors hover:bg-black/25"
             aria-label="Play video"
@@ -1335,7 +1336,7 @@ const replyPreviewSender = computed(() => {
             </span>
           </button>
           <div
-            v-if="videoDurationText && !isVideoPlaying && !videoPlaybackError"
+            v-if="videoDurationText && !isVideoJsEnabled && !isVideoPlaying && !videoPlaybackError"
             class="pointer-events-none absolute bottom-2 right-2 rounded-md bg-black/65 px-1.5 py-0.5 text-[11px] font-medium leading-none text-white"
           >
             {{ videoDurationText }}

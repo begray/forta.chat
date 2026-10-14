@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, toRef } from "vue";
 import { useFeedVideoPlayer } from "@/shared/lib/use-feed-video-player";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 interface Props {
   src: string | null;
@@ -74,6 +75,7 @@ function formatTime(seconds: number): string {
     <video
       ref="videoRef"
       class="absolute inset-0 h-full w-full object-contain"
+      :poster="BLANK_VIDEO_POSTER"
       playsinline
       :muted="isMuted"
       preload="none"

@@ -88,6 +88,24 @@ describe("MessageBubble — modern video bubble UX (WEE-32)", () => {
     expect(block).toMatch(/:poster=/);
   });
 
+  // Android WebView paints its own grey "play" placeholder on a <video>
+  // without a poster, and it flashes before the first frame.
+  it("falls back to the blank black poster until the first frame is extracted", () => {
+    const block = getVideoBlock();
+    expect(block).toContain(':poster="videoPosterUrl ?? BLANK_VIDEO_POSTER"');
+  });
+
+  // The Video.js skin has its own center play button and control bar; our
+  // full-frame overlay sat on top of them while paused and ate every tap
+  // (seek bar, fullscreen, PiP). The duration badge duplicated the skin's time.
+  it("leaves the paused Video.js player to its own controls", () => {
+    const block = getVideoBlock();
+    const overlayStart = block.lastIndexOf("<button", block.indexOf('aria-label="Play video"'));
+    const overlayTag = block.slice(overlayStart, block.indexOf(">", overlayStart));
+    expect(overlayTag).toMatch(/v-if="[^"]*!isVideoJsEnabled/);
+    expect(block).toMatch(/v-if="videoDurationText && !isVideoJsEnabled/);
+  });
+
   it("revokes the generated poster blob URL on unmount to avoid leaks", () => {
     const source = getSource();
     // The poster is held as a blob URL — without an explicit revoke the URL

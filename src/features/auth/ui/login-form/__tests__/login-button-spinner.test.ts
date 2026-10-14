@@ -26,5 +26,8 @@ describe("LoginForm sign-in button", () => {
     const spinner = button.find('[data-testid="login-spinner"]');
     expect(spinner.classes()).toEqual(expect.arrayContaining(["absolute", "right-full", "border-current"]));
     expect(button.text()).toBe("auth.signingIn");
+    // animate-spin overwrites `transform`; a translate there bobs the spinner.
+    expect(spinner.classes().some((c) => c.includes("translate"))).toBe(false);
+    expect(spinner.classes()).toEqual(expect.arrayContaining(["inset-y-0", "my-auto"]));
   });
 });

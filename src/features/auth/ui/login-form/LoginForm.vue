@@ -86,12 +86,14 @@ const handleLogin = async () => {
       >
         <!-- The spinner hangs left of the label, out of the flow: the label
              stays centered. Current color: the accent Spinner is invisible
-             on the accent button. -->
+             on the accent button. Centered by inset-y-0 + my-auto, not a
+             translate: animate-spin's keyframe replaces `transform`, so a
+             -translate-y-1/2 was animated away each turn (the spinner bobbed). -->
         <span class="relative">
           <span
             v-if="authStore.isLoggingIn"
             data-testid="login-spinner"
-            class="contain-strict absolute right-full top-1/2 mr-2 h-4 w-4 -translate-y-1/2 animate-spin rounded-full border-2 border-current border-t-transparent"
+            class="contain-strict absolute inset-y-0 right-full my-auto mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
           />
           {{ authStore.isLoggingIn ? t("auth.signingIn") : t("auth.signIn") }}
         </span>

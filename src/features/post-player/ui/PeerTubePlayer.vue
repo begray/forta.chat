@@ -3,6 +3,7 @@ import { prepareVideoJs } from "@/shared/lib/video-js/prepare-video-js";
 import { videoFrame } from "@/shared/lib/video-frame";
 import VideoJsFrame from "@/shared/ui/video-js-frame/VideoJsFrame.vue";
 import { useVideoJsPlayer, type VideoJsStore } from "../model/use-video-js-player";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 /**
  * PeerTube video in the Video.js 10 player: HLS with automatic quality, our
@@ -74,7 +75,7 @@ onBeforeUnmount(() => {
     data-testid="peertube-player"
   >
     <VideoJsFrame v-if="isLoaded" ref="frameRef">
-      <hls-video :src="src" :poster="poster || undefined" playsinline preload="metadata" />
+      <hls-video :src="src" :poster="poster || BLANK_VIDEO_POSTER" playsinline preload="metadata" />
     </VideoJsFrame>
 
     <!-- Poster + spinner while the player chunk loads -->

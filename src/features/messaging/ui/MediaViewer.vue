@@ -15,6 +15,7 @@ import { useVideoStatePreservation } from "@/shared/lib/composables/use-video-st
 import { touchDistance, nextScale, MIN_SCALE } from "../model/pinch-zoom";
 import { useToast } from "@/shared/lib/use-toast";
 import { canShareExternally, useExternalShare } from "../model/use-external-share";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 interface Props {
   show: boolean;
@@ -382,6 +383,7 @@ const handleShareCurrent = async () => {
             v-else-if="currentUrl && currentMessage.type === 'video'"
             ref="videoRef"
             :src="currentUrl"
+            :poster="BLANK_VIDEO_POSTER"
             controls
             playsinline
             class="max-h-full max-w-full"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from "vue";
 import type { VideoRecorderState } from "../model/use-video-circle-recorder";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 interface Props {
   state: VideoRecorderState;
@@ -138,7 +139,7 @@ const handleOverlayClick = () => {
     </button>
     <!-- Small preview circle -->
     <div class="h-[52px] w-[52px] shrink-0 overflow-hidden rounded-full">
-      <video v-if="previewUrl" ref="previewVideoRef" :src="previewUrl" loop autoplay muted playsinline class="h-full w-full object-cover" />
+      <video v-if="previewUrl" ref="previewVideoRef" :src="previewUrl" :poster="BLANK_VIDEO_POSTER" loop autoplay muted playsinline class="h-full w-full object-cover" />
     </div>
     <span class="text-sm tabular-nums text-text-color">{{ formatDuration(duration) }}</span>
     <div class="flex-1" />

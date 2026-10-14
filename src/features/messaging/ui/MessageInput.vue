@@ -31,6 +31,7 @@ import { isNative } from "@/shared/lib/platform";
 import { readShareUriAsBlob } from "@/shared/lib/share-target";
 import { sendExternalShareFiles } from "../model/send-external-share";
 import { narrowExternalShareForward } from "@/entities/chat/lib/external-share-forward";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 const PEER_KEYS_GRACE_MS = 2000;
 
@@ -1298,7 +1299,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
           <!-- Video: small circle preview + timer -->
           <template v-else>
             <div class="h-8 w-8 shrink-0 overflow-hidden rounded-full">
-              <video v-if="videoPreviewUrl" :src="videoPreviewUrl" loop autoplay muted playsinline class="h-full w-full object-cover" />
+              <video v-if="videoPreviewUrl" :src="videoPreviewUrl" :poster="BLANK_VIDEO_POSTER" loop autoplay muted playsinline class="h-full w-full object-cover" />
             </div>
             <span class="text-sm tabular-nums text-text-color">{{ formatDuration(recDuration) }}</span>
           </template>
@@ -1327,7 +1328,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
               transform="rotate(-90 125 125)" style="transition: stroke-dashoffset 0.3s ease;" />
           </svg>
           <div class="h-[228px] w-[228px] overflow-hidden rounded-full shadow-2xl">
-            <video ref="overlayVideoRef" autoplay muted playsinline class="h-full w-full object-cover" style="transform: scaleX(-1);" />
+            <video ref="overlayVideoRef" :poster="BLANK_VIDEO_POSTER" autoplay muted playsinline class="h-full w-full object-cover" style="transform: scaleX(-1);" />
           </div>
         </div>
       </div>
