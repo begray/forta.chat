@@ -141,7 +141,8 @@ export type RegistrationPhase = 'init' | 'broadcasting' | 'confirming' | 'done' 
 // fans in @capacitor/network on native + window.online/offline on web).
 // Replaces the previous raw window.online/offline listeners — those alone
 // did not fire reliably on Android WebView after device sleep+wake, leaving
-// the SyncEngine stuck offline forever (#705, #496).
+// the SyncEngine stuck offline forever (#705, #496). Also detaches the
+// app-foreground subscription that drives SyncEngine.resumeAfterBackground.
 let _connectivityUnsub: (() => void) | null = null;
 let _appStateHandle: { remove: () => Promise<void> } | null = null;
 // _matrixReconnectUnsub: armed while a Matrix start has failed (e.g. the app
@@ -609,9 +610,21 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
         _connectivityUnsub();
         _connectivityUnsub = null;
       }
-      _connectivityUnsub = onConnectivityChange(({ connected }) => {
+      const offConnectivity = onConnectivityChange(({ connected }) => {
         chatDbKit.syncEngine.setOnline(connected);
       });
+      // Screen unlock / app switch back: the phone may have slept through
+      // queued uploads without any connectivity transition — restart stalled
+      // uploads and re-arm the ones that failed in the background.
+      const offForeground = onForeground(() => {
+        chatDbKit.syncEngine.resumeAfterBackground().catch((e) => {
+          console.warn("[auth] SyncEngine resume failed:", e);
+        });
+      });
+      _connectivityUnsub = () => {
+        offConnectivity();
+        offForeground();
+      };
       chatStore.setHelpers(matrixKit.value!, cryptoInstance);
 
       // Wire Pcrypto key-load → decryption retry + peer-keys banner refresh.
