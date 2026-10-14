@@ -29,7 +29,7 @@ describe("MessageBubble — video bubble size", () => {
   it("an own video stays right-aligned inside the wider row", () => {
     const start = source.indexOf("<!-- Video message -->");
     const head = source.slice(start, source.indexOf("<!-- Forwarded indicator -->", start));
-    expect(head).toContain("'ml-auto bg-chat-bubble-own'");
+    expect(head).toContain("props.isOwn ? 'ml-auto' : ''");
   });
 
   it("the wide row applies only when the video branch renders", () => {

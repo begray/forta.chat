@@ -21,6 +21,7 @@ import { computeVideoAspectStyle, computeVideoBubbleWidth, resolveVideoDimension
 import { useBubbleVideoJs } from "../model/use-bubble-video-js";
 import VideoJsFrame from "@/shared/ui/video-js-frame/VideoJsFrame.vue";
 import MessageContent from "./MessageContent.vue";
+import VideoPlaceholderPattern from "./VideoPlaceholderPattern.vue";
 import EncryptedMessageNotice from "./EncryptedMessageNotice.vue";
 import MessageStatusIcon from "./MessageStatusIcon.vue";
 import PollCard from "./PollCard.vue";
@@ -32,6 +33,7 @@ import VoiceMessage from "./VoiceMessage.vue";
 import VideoCirclePlayer from "./VideoCirclePlayer.vue";
 import MediaDownloadProgress from "./MediaDownloadProgress.vue";
 import { ref, shallowRef, inject, onMounted, onBeforeUnmount } from "vue";
+import { getMediaCache } from "@/shared/lib/media-cache";
 import { useLongPress, useSwipeGesture } from "@/shared/lib/gestures";
 import { useThemeStore } from "@/entities/theme";
 import { hexDecode } from "@/shared/lib/matrix/functions";
@@ -282,6 +284,8 @@ useVideoStatePreservation(inlineVideoRef, fileCacheKey, { dontResumePlay: true }
 // + center play button + bottom-right duration badge instead of a bare
 // `<video controls>`. Native controls only appear once the user taps play.
 const isVideoPlaying = ref(false);
+/** Set by the pre-load play tap; consumed on the first `canplay`. */
+let shouldAutoplayVideo = false;
 const videoPosterUrl = ref<string | null>(null);
 const videoMetaDuration = ref<number | null>(null);
 const videoNaturalDim = ref<{ w: number; h: number } | null>(null);
@@ -311,6 +315,11 @@ const isVideoMessage = computed(() =>
   && hasFileInfo.value
   && !props.message.deleted
   && !isUndecrypted.value,
+);
+/** Plain video (no caption / reply / forward) renders as a black card in both
+ *  themes: no blue bubble edge around the frame or under the file name. */
+const isVideoCardDark = computed(() =>
+  !props.message.fileInfo?.caption && !props.message.replyTo && !props.message.forwardedFrom,
 );
 const videoBubbleStyle = computed(() => ({
   width: computeVideoBubbleWidth(videoDimensions.value, viewportW.value >= MD_BREAKPOINT_PX),
@@ -372,6 +381,7 @@ watch(
     // inherit a stale codec-unsupported overlay (WEE-21).
     videoPlaybackError.value = null;
     clearVideoLoadTimer();
+    shouldAutoplayVideo = false;
   },
 );
 
@@ -452,6 +462,7 @@ const armVideoLoadTimer = () => {
 
 const onInlineVideoError = (event: Event) => {
   clearVideoLoadTimer();
+  shouldAutoplayVideo = false;
   const target = event.target as HTMLVideoElement | null;
   videoPlaybackError.value = videoPlaybackErrorFromMediaError(target?.error?.code);
 };
@@ -459,6 +470,12 @@ const onInlineVideoError = (event: Event) => {
 const onInlineVideoCanPlay = () => {
   clearVideoLoadTimer();
   videoPlaybackError.value = null;
+  // The user tapped play before the file was loaded: start playback as soon
+  // as it can, instead of making them tap the play overlay a second time.
+  if (shouldAutoplayVideo) {
+    shouldAutoplayVideo = false;
+    playInlineVideo();
+  }
 };
 
 const videoErrorMessage = computed(() => {
@@ -816,9 +833,28 @@ const startVideoLoad = (opts?: { forceRefetch?: boolean }) => {
   });
 };
 
-const handleVideoAudioLoad = () => startVideoLoad();
+const handleVideoAudioLoad = () => {
+  shouldAutoplayVideo = true;
+  startVideoLoad();
+};
+
+/** Whether the video bytes are already in the persistent media cache: picks
+ *  the play icon (opens instantly) vs the download icon (network fetch). */
+const isVideoInMediaCache = ref(false);
+watch(
+  () => (isVideoMessage.value && !fileState.value.objectUrl ? props.message.fileInfo?.url ?? null : null),
+  async (url) => {
+    isVideoInMediaCache.value = false;
+    const cache = getMediaCache();
+    if (!url || !cache) return;
+    const isCached = await cache.has(url);
+    if (props.message.fileInfo?.url === url) isVideoInMediaCache.value = isCached;
+  },
+  { immediate: true },
+);
 
 const cancelVideoLoad = () => {
+  shouldAutoplayVideo = false;
   videoLoadAbort.value?.abort();
   videoLoadAbort.value = null;
 };
@@ -1190,7 +1226,7 @@ const replyPreviewSender = computed(() => {
       <div
         v-else-if="message.type === MessageType.video && hasFileInfo"
         class="overflow-hidden rounded-bubble"
-        :class="[tailClass, props.isOwn ? 'ml-auto bg-chat-bubble-own' : 'bg-chat-bubble-other', (message.replyTo || message.forwardedFrom) ? 'min-w-[180px]' : '']"
+        :class="[tailClass, props.isOwn ? 'ml-auto' : '', isVideoCardDark ? 'bg-black' : props.isOwn ? 'bg-chat-bubble-own' : 'bg-chat-bubble-other', (message.replyTo || message.forwardedFrom) ? 'min-w-[180px]' : '']"
         :style="videoBubbleStyle"
       >
         <!-- Forwarded indicator -->
@@ -1216,10 +1252,11 @@ const replyPreviewSender = computed(() => {
           </div>
         </div>
         <div
-          class="video-bubble-frame relative w-full overflow-hidden bg-black/90"
+          class="video-bubble-frame relative w-full overflow-hidden bg-black"
           :style="videoAspectStyle"
           data-testid="video-bubble-frame"
         >
+          <VideoPlaceholderPattern v-if="!fileState.objectUrl" />
           <VideoJsFrame
             v-if="fileState.objectUrl && isVideoShellReady"
             :enabled="isVideoJsEnabled"
@@ -1246,7 +1283,7 @@ const replyPreviewSender = computed(() => {
           <div v-else-if="fileState.objectUrl" class="flex h-full w-full items-center justify-center" data-testid="video-player-loading">
             <div class="contain-strict h-8 w-8 animate-spin rounded-full border-[3px] border-white/30 border-t-white" />
           </div>
-          <div v-else-if="fileState.loading" class="flex h-full w-full items-center justify-center bg-neutral-grad-0">
+          <div v-else-if="fileState.loading" class="relative flex h-full w-full items-center justify-center">
             <MediaDownloadProgress
               :phase="fileState.phase"
               :progress="fileState.progress"
@@ -1260,7 +1297,7 @@ const replyPreviewSender = computed(() => {
                exactly like a video that had not been loaded yet. -->
           <div
             v-else-if="fileState.error"
-            class="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-neutral-grad-0 px-3 text-center text-xs text-color-bad"
+            class="relative flex h-full w-full flex-col items-center justify-center gap-1.5 px-3 text-center text-xs text-color-bad"
             data-testid="video-download-error"
           >
             <template v-if="fileState.errorKind === 'crypto'">
@@ -1273,9 +1310,10 @@ const replyPreviewSender = computed(() => {
               <button v-if="fileState.errorKind === 'crypto'" type="button" class="text-[10px] underline opacity-70" @click.stop="reportDownloadProblem">{{ t('chat.decryptError.reportProblem') }}</button>
             </div>
           </div>
-          <button v-else type="button" class="flex h-full w-full items-center justify-center bg-neutral-grad-0 transition-colors hover:bg-neutral-grad-2" @click="handleVideoAudioLoad">
+          <button v-else type="button" class="relative flex h-full w-full items-center justify-center transition-colors hover:bg-white/5" @click="handleVideoAudioLoad">
             <span class="flex h-14 w-14 items-center justify-center rounded-full bg-color-bg-ac/90 text-white shadow-lg">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4" /></svg>
+              <svg v-if="isVideoInMediaCache" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" data-testid="video-play-icon"><polygon points="6 4 20 12 6 20 6 4" /></svg>
+              <svg v-else width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" data-testid="video-download-icon"><path d="M12 4v11" /><polyline points="7 10 12 15 17 10" /><path d="M5 20h14" /></svg>
             </span>
             <span
               v-if="fileSizeText"
@@ -1364,8 +1402,8 @@ const replyPreviewSender = computed(() => {
           </div>
         </div>
         <div v-if="!message.fileInfo?.caption" class="flex items-center justify-between px-3 py-1.5">
-          <span class="truncate text-xs" :class="props.isOwn ? 'text-white/70' : 'text-text-on-main-bg-color'">{{ message.fileInfo?.name }}</span>
-          <div v-if="themeStore.showTimestamps" class="flex items-center gap-1" :class="props.isOwn ? 'text-white/60' : 'text-text-on-main-bg-color'">
+          <span class="truncate text-xs" :class="props.isOwn || isVideoCardDark ? 'text-white/70' : 'text-text-on-main-bg-color'">{{ message.fileInfo?.name }}</span>
+          <div v-if="themeStore.showTimestamps" class="flex items-center gap-1" :class="props.isOwn || isVideoCardDark ? 'text-white/60' : 'text-text-on-main-bg-color'">
             <span class="text-[10px]">{{ time }}</span>
             <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
           </div>
@@ -1388,7 +1426,7 @@ const replyPreviewSender = computed(() => {
         </div>
         <!-- Reactions row -->
         <div v-if="message.reactions && Object.keys(message.reactions).length" class="px-2 pb-1">
-          <ReactionRow :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+          <ReactionRow :reactions="message.reactions" :is-own="props.isOwn || isVideoCardDark" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
         </div>
       </div>
 
