@@ -28,25 +28,28 @@ import { interopLog } from '@/shared/lib/interop';
  * pushkeys is scoped to the device's own `app_id` so iOS does not delete
  * Android's pusher and vice versa.
  *
- * The `2` suffix is the Firebase project: `fortaandroid2`/`fortaios2` go
- * through `fortachat` (2026-10). The old `fortaandroid` pusher stays on the
- * homeserver for installs that have not updated; an updated device removes its
- * own (see {@link isLegacyPusherEntry}).
+ * The app_id picks the Firebase project Sygnal sends through, and it must
+ * match the native configs (`google-services.json`, `GoogleService-Info.plist`):
+ * `fortaandroid`/`fortaios` are the old `forta-chat` project. The move to
+ * `fortachat` (`fortaandroid2`/`fortaios2`) is on hold, see
+ * docs/plans/2026-10-14-firebase-fortachat-migration.md. When it lands, the old
+ * pusher stays for installs that have not updated; an updated device removes
+ * its own (see {@link isLegacyPusherEntry}).
  *
  * iOS uses TWO pushers in parallel:
- *   - `fortaios2`    → regular APNs (FCM token) for non-call notifications.
+ *   - `fortaios`     → regular APNs (FCM token) for non-call notifications.
  *   - `fortaios.voip` → APNs VoIP class (PushKit token) for `m.call.invite`
  *                      events only. Apple guidelines forbid using PushKit
  *                      for anything else, so Sygnal is configured to route
  *                      only `msg_type == m.call.invite[.video]` to this
  *                      pusher (see SYGNAL-CONFIG-REQUEST.md).
  */
-export const PUSHER_APP_ID_IOS = 'fortaios2';
+export const PUSHER_APP_ID_IOS = 'fortaios';
 export const PUSHER_APP_ID_IOS_VOIP = 'fortaios.voip';
 /** VoIP pusher of a build installed from Xcode: its PushKit token is valid on
  *  the APNs sandbox only, which Sygnal reaches through a separate pushkin. */
 export const PUSHER_APP_ID_IOS_VOIP_SANDBOX = 'fortaios.voip.sandbox';
-export const PUSHER_APP_ID_ANDROID = 'fortaandroid2';
+export const PUSHER_APP_ID_ANDROID = 'fortaandroid';
 const SYGNAL_PUSH_URL = 'https://matrix.pocketnet.app/_matrix/push/v1/notify';
 
 export interface PusherPayload {
@@ -62,7 +65,7 @@ export interface PusherPayload {
 /**
  * Build the per-platform pusher payload. Pure function — exported for unit
  * tests. iOS flows through Firebase iOS SDK → APNs (Apple delivers via Sygnal
- * with `app_id: fortaios2`). Android flows through FCM directly.
+ * with `app_id: fortaios`). Android flows through FCM directly.
  */
 export function buildPusherPayload(token: string, opts: { isIOS: boolean }): PusherPayload {
   return {

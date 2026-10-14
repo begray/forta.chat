@@ -12,17 +12,17 @@ import {
 } from './push-service';
 
 describe('buildPusherPayload', () => {
-  it('uses fortaios2 app_id and "iOS" device_display_name on iOS', () => {
+  it('uses fortaios app_id and "iOS" device_display_name on iOS', () => {
     const payload = buildPusherPayload('token-abc', { isIOS: true });
     expect(payload.app_id).toBe(PUSHER_APP_ID_IOS);
-    expect(payload.app_id).toBe('fortaios2');
+    expect(payload.app_id).toBe('fortaios');
     expect(payload.device_display_name).toBe('iOS');
   });
 
-  it('uses fortaandroid2 app_id and "Android" device_display_name on Android', () => {
+  it('uses fortaandroid app_id and "Android" device_display_name on Android', () => {
     const payload = buildPusherPayload('token-abc', { isIOS: false });
     expect(payload.app_id).toBe(PUSHER_APP_ID_ANDROID);
-    expect(payload.app_id).toBe('fortaandroid2');
+    expect(payload.app_id).toBe('fortaandroid');
     expect(payload.device_display_name).toBe('Android');
   });
 

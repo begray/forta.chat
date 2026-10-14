@@ -118,9 +118,10 @@ describe('PushService.registerPusher retry behaviour', () => {
   });
 });
 
-// The move to the `fortachat` Firebase project left the device's old pusher
-// (app_id fortaandroid, old token) on the homeserver next to the new one, and
-// every message rang twice.
+// A change of Firebase project (fortaandroid <-> fortaandroid2, see
+// docs/plans/2026-10-14-firebase-fortachat-migration.md) leaves the device's
+// old pusher (other app_id, old token) on the homeserver next to the new one,
+// and every message rang twice.
 describe('PushService.registerPusher legacy pusher removal', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -137,8 +138,8 @@ describe('PushService.registerPusher legacy pusher removal', () => {
   it('removes the old-project pusher of this device once the new one is registered', async () => {
     const { PushData } = await import('./push-data-plugin');
     vi.mocked(PushData.onPusherRegistered).mockResolvedValueOnce({ legacyToken: 'old-token' });
-    const oldPusher = { app_id: 'fortaandroid', pushkey: 'old-token', kind: 'http' };
-    const otherDevice = { app_id: 'fortaandroid', pushkey: 'other-device', kind: 'http' };
+    const oldPusher = { app_id: 'fortaandroid2', pushkey: 'old-token', kind: 'http' };
+    const otherDevice = { app_id: 'fortaandroid2', pushkey: 'other-device', kind: 'http' };
     const client = {
       setPusher: vi.fn().mockResolvedValue(undefined),
       getPushers: vi.fn().mockResolvedValue({ pushers: [oldPusher, otherDevice] }),
@@ -147,7 +148,7 @@ describe('PushService.registerPusher legacy pusher removal', () => {
     await register(client);
 
     expect(PushData.onPusherRegistered).toHaveBeenCalledWith({ token: 'new-token' });
-    expect(client.setPusher).toHaveBeenNthCalledWith(1, expect.objectContaining({ app_id: 'fortaandroid2', pushkey: 'new-token' }));
+    expect(client.setPusher).toHaveBeenNthCalledWith(1, expect.objectContaining({ app_id: 'fortaandroid', pushkey: 'new-token' }));
     expect(client.setPusher).toHaveBeenCalledWith({ ...oldPusher, kind: null });
     expect(client.setPusher).not.toHaveBeenCalledWith(expect.objectContaining({ pushkey: 'other-device', kind: null }));
     expect(PushData.clearLegacyFcmToken).toHaveBeenCalledWith({ token: 'old-token' });

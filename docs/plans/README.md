@@ -17,6 +17,7 @@ Commands inside plans (e.g. `npm run lint`, old paths like `com/bastyon/chat`, `
 
 | Plan | State | What is open |
 |---|---|---|
+| [2026-10-14-firebase-fortachat-migration](2026-10-14-firebase-fortachat-migration.md) | code in `7c99fe38`, switched off (release stays on `forta-chat`) | app_id + configs swap, Sygnal/APNs check, device check, iOS duplicates |
 | [2026-10-13-peertube-hls-player](2026-10-13-peertube-hls-player.md) | stages 0–6 in code (not committed) | 7: device checks (`manual-verification.md`) |
 | [2026-10-13-sdk-upstream-sliding-sync](2026-10-13-sdk-upstream-sliding-sync.md) | plan only; stage 0 decided (cache variant A) | stages 1–8: fork rebase in `C:\inetpub2022\matrix-js-sdk`, local test on Forta, usage docs, npm publish (owner) |
 | [2026-10-11-resumable-media-download](2026-10-11-resumable-media-download.md) | plan only | everything; section 8 first (confirm prod runs `rebase/v1.148.0`, nginx owner) |
