@@ -18,6 +18,7 @@ import { toBastyonPostHttpsUrl } from "@/shared/lib/bastyon-link";
 import { withTimeout } from "@/shared/lib/with-timeout";
 import { useChatStore } from "@/entities/chat";
 import DonateModal from "@/features/wallet/ui/DonateModal.vue";
+import { isPkoinWalletEnabled } from "@/shared/lib/platform";
 
 // Bound the skeleton: on slow networks (Tor) loadPost can hang indefinitely and
 // the skeleton reads as an eternal spinner (WEE-70). After this many ms we drop
@@ -287,8 +288,8 @@ onMounted(loadPostData);
       </div>
     </div>
 
-    <!-- Inline video — on native, tapping play opens the post modal instead of
-         embedding the iframe in the feed, which would lock feed scroll (WEE-74). -->
+    <!-- Video preview — tapping it opens the post modal, where the video plays
+         (all platforms; an in-feed player locked feed scroll, WEE-74). -->
     <VideoPlayer v-if="videoInfo" :url="post.url" inline @expand="showModal = true" />
 
     <!-- Image — tap opens the gallery with all of the post's images -->
@@ -404,9 +405,9 @@ onMounted(loadPostData);
         </svg>
       </button>
 
-      <!-- Boost -->
+      <!-- Boost (sends PKOIN — off on iOS) -->
       <button
-        v-if="!isOwnPost"
+        v-if="!isOwnPost && isPkoinWalletEnabled"
         :aria-label="t('postPlayer.boost')"
         class="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
         :class="isOwn ? 'text-white/50 hover:bg-white/10 hover:text-white/80' : 'text-color-star-yellow hover:bg-color-star-yellow/10'"

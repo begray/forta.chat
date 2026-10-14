@@ -156,6 +156,8 @@ declare var Api: new (instance: PocketnetInstanceType) => {
   rpc(method: string, params?: unknown[], options?: { fnode?: string; node?: string; ex?: boolean }): Promise<any>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fetchauth(path: string, data?: unknown, options?: { proxy?: string }): Promise<any>;
+  /** Unsigned proxy endpoint (e.g. `peertube/allservers`); resolves with the `data` field. */
+  fetch(path: string, data?: unknown): Promise<unknown>;
   get: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     proxywithwallet(): Promise<any>;
@@ -163,6 +165,9 @@ declare var Api: new (instance: PocketnetInstanceType) => {
     proxywithwalletls(): Promise<any>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     byid(id: string): any;
+    /** The proxy the ping picked (undefined before it). Its `api` holds the
+     *  proxy endpoints; the peertube list is memoized inside api.js. */
+    current(): { api: { peertubeserversList(): Promise<string[] | null | undefined> } } | undefined;
     /** Resolve the active proxy WSS endpoint. Returns either:
      *  - `{ url, proxy }` with `url = "wss://host:port"` for a real network proxy, or
      *  - `{ dummy, proxy }` when running against the in-process direct proxy
@@ -175,14 +180,17 @@ declare var Api: new (instance: PocketnetInstanceType) => {
   };
   wait: { ready(type: string, timeout: number): Promise<void> };
   ready: { use: boolean };
-  /** Proxy endpoints; the list is memoized inside api.js. */
-  api: { peertubeserversList(): Promise<string[] | null | undefined> };
 };
 declare var Actions: new (instance: PocketnetInstanceType, api: InstanceType<typeof Api>) => {
   init(): void;
   prepare(): void;
   addAccount(address: string): void;
   addActionAndSendIfCan(info: unknown, arg: null, address: string): Promise<unknown>;
+  /** The signed-in account's wallet state (null before addAccount). */
+  getCurrentAccount?(): {
+    updateUnspents(): Promise<unknown>;
+    actualBalance(): { actual: number };
+  } | null | undefined;
 };
 declare var pSDK: new (opts: {
   actions: InstanceType<typeof Actions>;
@@ -246,6 +254,8 @@ declare var UserInfo: new () => {
   ref: { set(v: unknown): void };
   keys: { set(v: unknown): void };
 };
+/** Pocketnet `accDel` transaction (kit.js): deletes the sender's account. */
+declare var DeleteAccount: new () => object;
 declare var superXSS: (value: string) => string;
 
 interface UserDataSDK {

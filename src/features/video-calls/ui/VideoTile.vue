@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { UserAvatar } from "@/entities/user";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 interface Props {
   stream: MediaStream | null;
@@ -107,6 +108,7 @@ function handleClick() {
         'scale-x-[-1]': mirror,
         invisible: showAvatar,
       }"
+      :poster="BLANK_VIDEO_POSTER"
       autoplay
       playsinline
       :muted="muted"

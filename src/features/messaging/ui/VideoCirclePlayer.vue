@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import type { Message } from "@/entities/chat";
 import { useFileDownload } from "../model/use-file-download";
 import { useVideoStatePreservation } from "@/shared/lib/composables/use-video-state-preservation";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 interface Props {
   message: Message;
@@ -123,6 +124,7 @@ onUnmounted(() => {
       ref="videoEl"
       class="video-circle block h-[150px] w-[150px] object-cover sm:h-[200px] sm:w-[200px] select-none [-webkit-touch-callout:none] [-webkit-user-drag:none]"
       :src="videoSrc ?? undefined"
+      :poster="BLANK_VIDEO_POSTER"
       draggable="false"
       muted
       playsinline

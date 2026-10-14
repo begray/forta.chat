@@ -23,6 +23,34 @@ if (isElectron) {
   nodeFetch = FetchReceiver.init('ExtendedFetch');
 }
 
+/**
+ * Size of a response body for the network stats, without holding the
+ * response back: the page gets the response as soon as the headers arrive and
+ * reads the body (and its download progress) itself. Content-Length when the
+ * server sends it; otherwise a clone is counted chunk by chunk in the
+ * background. Never rejects — a body the page aborts counts what arrived.
+ */
+async function countResponseBytes(response) {
+  const length = Number(response.headers.get('content-length'));
+  if (length > 0) return length;
+
+  const body = response.clone().body;
+  if (!body) return 0;
+
+  const reader = body.getReader();
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+    }
+  } catch {
+    // Aborted or failed mid-body: report what arrived.
+  }
+  return total;
+}
+
 function onFetch(event) {
   const { request } = event;
 
@@ -58,27 +86,26 @@ function onFetch(event) {
 
     if (isTorRequest) {
       return await nodeFetch(request)
-        .then(async (response) => {
+        .then((response) => {
           const proxyTransportHeader = response.headers.get('#bastyon-proxy-transport');
           const hasUsedTor = (proxyTransportHeader === 'tor');
 
-          const responseClone = response.clone();
-          const responseBuffer = await responseClone.arrayBuffer();
+          countResponseBytes(response).then((bytesLength) => {
+            if (hasUsedTor) {
+              networkTotalStats.torSuccessCount++;
+              networkTotalStats.totalTorBytes += bytesLength;
+            } else {
+              networkTotalStats.directSuccessCount++;
+              networkTotalStats.directBytes += bytesLength;
+            }
 
-          if (hasUsedTor) {
-            networkTotalStats.torSuccessCount++;
-            networkTotalStats.totalTorBytes += responseBuffer.byteLength;
-          } else {
-            networkTotalStats.directSuccessCount++;
-            networkTotalStats.directBytes += responseBuffer.byteLength;
-          }
-
-          swBroadcaster.send('network-stats', {
-            status: 'success',
-            url: request.url,
-            torUsed: hasUsedTor,
-            bytesLength: responseBuffer.byteLength,
-            totalStats: networkTotalStats,
+            swBroadcaster.send('network-stats', {
+              status: 'success',
+              url: request.url,
+              torUsed: hasUsedTor,
+              bytesLength,
+              totalStats: networkTotalStats,
+            });
           });
 
           return response;
@@ -123,19 +150,18 @@ function onFetch(event) {
     }
 
     return fetch(proxyURL, fetchInit)
-      .then(async (response) => {
-        const responseClone = response.clone();
-        const responseBuffer = await responseClone.arrayBuffer();
+      .then((response) => {
+        countResponseBytes(response).then((bytesLength) => {
+          networkTotalStats.torSuccessCount++;
+          networkTotalStats.totalTorBytes += bytesLength;
 
-        networkTotalStats.torSuccessCount++;
-        networkTotalStats.totalTorBytes += responseBuffer.byteLength;
-
-        swBroadcaster.send('network-stats', {
-          status: 'success',
-          url: request.url,
-          torUsed: true,
-          bytesLength: responseBuffer.byteLength,
-          totalStats: networkTotalStats,
+          swBroadcaster.send('network-stats', {
+            status: 'success',
+            url: request.url,
+            torUsed: true,
+            bytesLength,
+            totalStats: networkTotalStats,
+          });
         });
 
         return response;
@@ -188,20 +214,22 @@ function onFetch(event) {
       const fetchResponse = await fetch(request);
 
       if (fetchResponse) {
-        const responseClone = fetchResponse.clone();
-        const responseBuffer = await responseClone.arrayBuffer();
-
-        networkTotalStats.directSuccessCount++;
-        networkTotalStats.directBytes += responseBuffer.byteLength;
-
-        swBroadcaster.send('network-stats', {
-          status: 'success',
-          url: request.url,
-          bytesLength: responseBuffer.byteLength,
-          totalStats: networkTotalStats,
-        });
-
+        // Answer on headers: awaiting the body here held a 17 MB video back
+        // from the page until it was fully downloaded — no progress, and the
+        // page's 30 s headers deadline fired on every attempt.
         resolve(fetchResponse);
+
+        countResponseBytes(fetchResponse).then((bytesLength) => {
+          networkTotalStats.directSuccessCount++;
+          networkTotalStats.directBytes += bytesLength;
+
+          swBroadcaster.send('network-stats', {
+            status: 'success',
+            url: request.url,
+            bytesLength,
+            totalStats: networkTotalStats,
+          });
+        });
       }
     } catch (err) {
       networkTotalStats.directFailCount++;

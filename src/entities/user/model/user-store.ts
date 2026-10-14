@@ -22,6 +22,26 @@ const MISSING_PROFILE_TTL_MS = 5 * 60 * 1000;
 /** Pause after the first empty answer before asking again (may be a flaky node). */
 const MISSING_PROFILE_RECHECK_MS = 30 * 1000;
 
+/** Addresses the chain reports as deleted (`deleted: true` in getuserprofile).
+ *  A deleted Bastyon account cannot be restored, so they are never asked again,
+ *  across restarts too. Not account-specific: kept on logout. */
+const DELETED_LS_KEY = "bastyon-chat-deleted-users";
+
+function readDeletedUsers(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(DELETED_LS_KEY) ?? "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((a): a is string => typeof a === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeDeletedUsers(addresses: Set<string>): void {
+  try {
+    localStorage.setItem(DELETED_LS_KEY, JSON.stringify([...addresses]));
+  } catch { /* storage blocked — asked again next start */ }
+}
+
 /** Shared app initializer instance for loading user profiles on demand */
 let _appInit: ReturnType<typeof createAppInitializer> | null = null;
 function getAppInit() {
@@ -127,7 +147,12 @@ export const useUserStore = defineStore(NAMESPACE, () => {
   // single empty answer only buys a short pause: a flaky node can answer
   // without the row, and a real user's name must not vanish for minutes.
   const missingProfiles = new Map<string, { emptyAnswers: number; at: number }>();
+  // Only an explicit `deleted: true` from the chain lands here. An address that
+  // is not registered yet (e.g. our own account mid-registration) has no row at
+  // all, so it stays on the short missingProfiles pause above and never here.
+  const deletedProfiles = readDeletedUsers();
   const isProfileMissing = (address: string): boolean => {
+    if (deletedProfiles.has(address)) return true;
     const entry = missingProfiles.get(address);
     if (!entry) return false;
     const ttl = entry.emptyAnswers >= 2 ? MISSING_PROFILE_TTL_MS : MISSING_PROFILE_RECHECK_MS;
@@ -139,13 +164,30 @@ export const useUserStore = defineStore(NAMESPACE, () => {
       missingProfiles.delete(address);
       return;
     }
+    // The SDK drops nameless rows, so `deleted` survives only in the raw row.
+    if (getAppInit().getRawUserProfile(address)?.deleted === true) {
+      missingProfiles.delete(address);
+      if (!deletedProfiles.has(address)) {
+        deletedProfiles.add(address);
+        writeDeletedUsers(deletedProfiles);
+      }
+      return;
+    }
     const emptyAnswers = (missingProfiles.get(address)?.emptyAnswers ?? 0) + 1;
     missingProfiles.set(address, { emptyAnswers, at: Date.now() });
   };
 
   let _triggerTimer: ReturnType<typeof setTimeout> | null = null;
+  // A ProfileLoader flush that changed nothing must not notify: the sidebar's
+  // room list depends on `users` and re-enqueues the addresses it still lacks,
+  // so an unconditional trigger looped forever on profiles the server has
+  // none for — a re-render plus a full localStorage rewrite every ~0.5s.
+  let _flushDirty = false;
   function debouncedTrigger(): void {
-    if (PROFILE_LOADER_BATCH_ACTIVE.active) return; // suppress during batch
+    if (PROFILE_LOADER_BATCH_ACTIVE.active) {
+      _flushDirty = true; // onFlushComplete delivers it once the batch ends
+      return;
+    }
     if (_triggerTimer) return; // already scheduled
     _triggerTimer = setTimeout(() => {
       _triggerTimer = null;
@@ -350,6 +392,8 @@ export const useUserStore = defineStore(NAMESPACE, () => {
   const profileLoader = new ProfileLoader(
     (addrs) => loadUsersBatch(addrs),
     () => {
+      if (!_flushDirty) return;
+      _flushDirty = false;
       // Single triggerRef after all batches instead of N intermediate ones
       if (_triggerTimer) { clearTimeout(_triggerTimer); _triggerTimer = null; }
       triggerRef(users);
@@ -414,6 +458,7 @@ export const useUserStore = defineStore(NAMESPACE, () => {
     users.value = {};
     triggerRef(users);
     if (_triggerTimer) { clearTimeout(_triggerTimer); _triggerTimer = null; }
+    _flushDirty = false;
     if (_cacheTimer) { clearTimeout(_cacheTimer); _cacheTimer = null; }
     if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
     if (_revalidateTimer) { clearTimeout(_revalidateTimer); _revalidateTimer = null; }

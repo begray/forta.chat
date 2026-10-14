@@ -46,8 +46,8 @@ describe("getRoomTitleForUI", () => {
     expect(result).toEqual({ state: "resolving", text: "" });
   });
 
-  it("returns resolving for raw Bastyon address (20+ alphanum chars)", () => {
-    const result = getRoomTitleForUI("PPbNqCweRt12345AbCdE", { gaveUp: false, roomId: "!abcd:server" });
+  it("returns resolving for raw Bastyon address (34 base58 chars)", () => {
+    const result = getRoomTitleForUI("PPbNqCweFnTePQyXWR21B9jXWCiDJa2yYu", { gaveUp: false, roomId: "!abcd:server" });
     expect(result).toEqual({ state: "resolving", text: "" });
   });
 

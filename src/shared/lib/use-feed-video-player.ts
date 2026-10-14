@@ -4,6 +4,11 @@ import {
   saveVideoPosition,
   clearVideoPosition,
 } from "@/shared/lib/video-position-store";
+import {
+  bindMediaElement,
+  claimActivePlayer,
+  releaseActivePlayer,
+} from "@/shared/lib/active-video-player";
 
 export type FeedPlayerState = "idle" | "loading" | "ready" | "playing" | "paused" | "error";
 
@@ -36,28 +41,8 @@ export interface FeedPlayerOptions {
   onFatalError?: () => void;
 }
 
-// ---------------------------------------------------------------------------
-// Single Active Player — only one video plays at a time globally
-// ---------------------------------------------------------------------------
-let activePlayer: { pause: () => void } | null = null;
-
-function claimActivePlayer(player: { pause: () => void }) {
-  if (activePlayer && activePlayer !== player) {
-    activePlayer.pause();
-  }
-  activePlayer = player;
-}
-
-function releaseActivePlayer(player: { pause: () => void }) {
-  if (activePlayer === player) {
-    activePlayer = null;
-  }
-}
-
-/** Exported for test cleanup only. */
-export function _resetActivePlayer() {
-  activePlayer = null;
-}
+// Single active player — shared with the HLS post player.
+export { _resetActivePlayer } from "@/shared/lib/active-video-player";
 
 // ---------------------------------------------------------------------------
 // Composable
@@ -340,10 +325,14 @@ export function useFeedVideoPlayer(options: FeedPlayerOptions) {
 
   // --- Lifecycle ---
 
+  let unbindMedia: (() => void) | null = null;
+
   function bindListeners() {
     const el = videoRef.value;
     if (!el) return;
 
+    // Another sound starting pauses this one through pause(), keeping state.
+    unbindMedia = bindMediaElement(el, playerHandle);
     el.addEventListener("loadedmetadata", onLoadedMetadata);
     el.addEventListener("timeupdate", onTimeUpdate);
     el.addEventListener("progress", onProgress);
@@ -358,6 +347,8 @@ export function useFeedVideoPlayer(options: FeedPlayerOptions) {
     const el = videoRef.value;
     if (!el) return;
 
+    unbindMedia?.();
+    unbindMedia = null;
     el.removeEventListener("loadedmetadata", onLoadedMetadata);
     el.removeEventListener("timeupdate", onTimeUpdate);
     el.removeEventListener("progress", onProgress);

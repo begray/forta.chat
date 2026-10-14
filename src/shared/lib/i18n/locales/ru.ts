@@ -250,6 +250,18 @@ export const ru: Record<TranslationKey, string> = {
   "settings.addAccount": "Добавить аккаунт",
   "settings.removeAccount": "Выйти",
   "settings.removeAccountConfirm": "Выйти из этого аккаунта?",
+  "settings.deleteAccount.button": "Удалить аккаунт",
+  "settings.deleteAccount.question": "Вы действительно хотите удалить аккаунт навсегда? Это действие невозможно будет отменить.",
+  "settings.deleteAccount.yes": "Да, удалить аккаунт навсегда",
+  "settings.deleteAccount.ok": "ОК",
+  "settings.deleteAccount.step.prepare": "Подготовка",
+  "settings.deleteAccount.step.removePeertube": "Удаление данных с видеосерверов",
+  "settings.deleteAccount.step.removeMatrix": "Удаление данных с сервера чата",
+  "settings.deleteAccount.step.removeBB": "Удаление аккаунта из блокчейна",
+  "settings.deleteAccount.success": "Удаление вашего аккаунта прошло успешно. В течение 10 минут процедура должна завершиться полностью.",
+  "settings.deleteAccount.error.notprepared": "Аккаунт не найден в блокчейне, возможно требуется подождать некоторое время",
+  "settings.deleteAccount.error.balance": "Произошла ситуация, в которой удаление аккаунта невозможно. Для того, чтобы совершить действие необходимо иметь минимальный баланс PKOIN",
+  "settings.deleteAccount.error.undefinedError": "Возникла непредвиденная ошибка при удалении аккаунта, попробуйте перезапустить приложение и совершить действие снова",
   "settings.switching": "Переключение...",
 
   // ── Settings content / Appearance ──
@@ -362,6 +374,9 @@ export const ru: Record<TranslationKey, string> = {
   "message.videoUnsupportedFormat": "Формат видео не поддерживается",
   "message.videoLoadFailed": "Не удалось воспроизвести видео",
   "message.videoDownload": "Скачать",
+  "message.videoDownloadFailed": "Не удалось скачать видео",
+  "message.cancelDownload": "Отменить загрузку",
+  "message.decrypting": "Расшифровка…",
 
   // ── Message context menu ──
   "contextMenu.reply": "Ответить",
@@ -411,6 +426,11 @@ export const ru: Record<TranslationKey, string> = {
   "voice.slideCancel": "Сдвиньте для отмены",
   "voice.hintVideo": "Нажмите для видео, удерживайте чтобы записать",
   "voice.hintAudio": "Нажмите для аудио, удерживайте чтобы записать",
+  // ── Голосовой мини-плеер ──
+  "voicePlayer.play": "Воспроизвести",
+  "voicePlayer.pause": "Пауза",
+  "voicePlayer.close": "Закрыть плеер",
+  "voicePlayer.openMessage": "Перейти к сообщению",
 
   // ── Chat search ──
   "chatSearch.placeholder": "Поиск в чате...",
@@ -426,6 +446,7 @@ export const ru: Record<TranslationKey, string> = {
 
   // ── Forward ──
   "forward.title": "Переслать в...",
+  "forward.shareExternal": "Поделиться в другие приложения",
   "forward.searchPlaceholder": "Поиск чатов...",
   "forward.noChats": "Чаты не найдены",
   "forward.sending": "Отправка...",
@@ -455,6 +476,7 @@ export const ru: Record<TranslationKey, string> = {
   "media.addCaption": "Добавить подпись...",
   "media.captionBelow": "Подпись снизу",
   "media.captionAbove": "Подпись сверху",
+  "media.share": "Поделиться",
   "media.save": "Сохранить",
   "media.savedToGallery": "Сохранено в галерею",
   "media.savedToDownloads": "Сохранено в Загрузки",
@@ -849,6 +871,11 @@ export const ru: Record<TranslationKey, string> = {
   "postPlayer.prevImage": "Предыдущее изображение",
   "postPlayer.nextImage": "Следующее изображение",
   "postPlayer.imageCount": "Фото: {count}",
+  "postPlayer.playVideo": "Воспроизвести видео",
+  "postPlayer.videoUnavailable": "Видео не воспроизводится здесь",
+  "postPlayer.openVideoExternally": "Открыть видео в браузере",
+  "video.playbackError": "Ошибка воспроизведения",
+  "video.retry": "Повторить",
 
   // ── Registration ──
   "register.title": "Создать аккаунт",
@@ -900,6 +927,8 @@ export const ru: Record<TranslationKey, string> = {
   "share.nativeShare": "Поделиться через...",
   "share.sendFailed": "Не удалось отправить файл",
   "share.filesCount": "Файлов: {count}",
+  "share.dialogTitle": "Поделиться",
+  "share.failed": "Не удалось поделиться",
 
   // ── Share group link ──
   "shareGroup.inviteLink": "Ссылка-приглашение",
@@ -970,6 +999,7 @@ export const ru: Record<TranslationKey, string> = {
 
   // ── Common ──
   "common.cancel": "Отмена",
+  "common.close": "Закрыть",
   "common.loading": "Загрузка...",
   "common.unknownUser": "Пользователь",
   "common.encryptedChat": "Чат",
@@ -1006,6 +1036,7 @@ export const ru: Record<TranslationKey, string> = {
   "boot.authenticating": "Аутентификация…",
   "boot.connectingServer": "Подключение к серверу…",
   "boot.syncingMessages": "Синхронизация сообщений…",
+  "boot.openingChats": "Открываем чаты…",
   "boot.loading": "Загрузка Forta Chat…",
   "boot.failed": "Не удалось запустить Forta Chat",
   "boot.matrixUnreachable": "Не удалось подключиться к серверу чата",

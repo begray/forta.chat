@@ -3,6 +3,7 @@ import { isNative } from "@/shared/lib/platform";
 import { getRealGetUserMedia } from "@/shared/lib/native-webrtc";
 import { useBugReport } from "@/features/bug-report";
 import { tRaw } from "@/shared/lib/i18n";
+import { interruptVoicePlayback } from "./use-audio-playback";
 
 export type VideoRecorderState = "idle" | "recording" | "locked" | "preview";
 
@@ -45,6 +46,8 @@ export function useVideoCircleRecorder() {
   };
 
   const startRecording = async () => {
+    // The mic must not record the voice message playing out of the speaker.
+    interruptVoicePlayback();
     try {
       const t0 = Date.now();
       const gum = (isNative && getRealGetUserMedia()) || navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);

@@ -248,6 +248,18 @@ export const en = {
   "settings.addAccount": "Add Account",
   "settings.removeAccount": "Log out",
   "settings.removeAccountConfirm": "Log out of this account?",
+  "settings.deleteAccount.button": "Delete account",
+  "settings.deleteAccount.question": "Are you sure you want to permanently delete your account? This action cannot be undone.",
+  "settings.deleteAccount.yes": "Yes, delete account permanently",
+  "settings.deleteAccount.ok": "OK",
+  "settings.deleteAccount.step.prepare": "Preparing",
+  "settings.deleteAccount.step.removePeertube": "Deleting data from video servers",
+  "settings.deleteAccount.step.removeMatrix": "Deleting data from the chat server",
+  "settings.deleteAccount.step.removeBB": "Removing the account from the blockchain",
+  "settings.deleteAccount.success": "Your account has been deleted. The procedure should be fully completed within 10 minutes.",
+  "settings.deleteAccount.error.notprepared": "Account not found on the blockchain, you may need to wait a while",
+  "settings.deleteAccount.error.balance": "The account cannot be deleted right now. To perform this action you need a minimum PKOIN balance",
+  "settings.deleteAccount.error.undefinedError": "An unexpected error occurred while deleting your account. Please restart the app and try again",
   "settings.switching": "Switching...",
 
   // ── Settings content / Appearance ──
@@ -360,6 +372,9 @@ export const en = {
   "message.videoUnsupportedFormat": "Video format not supported",
   "message.videoLoadFailed": "Failed to load video",
   "message.videoDownload": "Download",
+  "message.videoDownloadFailed": "Couldn't download the video",
+  "message.cancelDownload": "Cancel download",
+  "message.decrypting": "Decrypting…",
 
   // ── Message context menu ──
   "contextMenu.reply": "Reply",
@@ -409,6 +424,11 @@ export const en = {
   "voice.slideCancel": "Slide to cancel",
   "voice.hintVideo": "Tap for video, hold to record",
   "voice.hintAudio": "Tap for audio, hold to record",
+  // ── Voice mini-player ──
+  "voicePlayer.play": "Play",
+  "voicePlayer.pause": "Pause",
+  "voicePlayer.close": "Close player",
+  "voicePlayer.openMessage": "Go to message",
 
   // ── Chat search ──
   "chatSearch.placeholder": "Search in chat...",
@@ -424,6 +444,7 @@ export const en = {
 
   // ── Forward ──
   "forward.title": "Forward to...",
+  "forward.shareExternal": "Share to other apps",
   "forward.searchPlaceholder": "Search chats...",
   "forward.noChats": "No chats found",
   "forward.sending": "Sending...",
@@ -453,6 +474,7 @@ export const en = {
   "media.addCaption": "Add a caption...",
   "media.captionBelow": "Caption below",
   "media.captionAbove": "Caption above",
+  "media.share": "Share",
   "media.save": "Save",
   "media.savedToGallery": "Saved to gallery",
   "media.savedToDownloads": "Saved to Downloads",
@@ -847,6 +869,11 @@ export const en = {
   "postPlayer.prevImage": "Previous image",
   "postPlayer.nextImage": "Next image",
   "postPlayer.imageCount": "{count} photos",
+  "postPlayer.playVideo": "Play video",
+  "postPlayer.videoUnavailable": "The video can't be played here",
+  "postPlayer.openVideoExternally": "Open video externally",
+  "video.playbackError": "Playback error",
+  "video.retry": "Retry",
 
   // ── Registration ──
   "register.title": "Create Account",
@@ -898,6 +925,8 @@ export const en = {
   "share.nativeShare": "Share via...",
   "share.sendFailed": "Failed to send file",
   "share.filesCount": "{count} files",
+  "share.dialogTitle": "Share",
+  "share.failed": "Couldn't share",
 
   // ── Share group link ──
   "shareGroup.inviteLink": "Invite Link",
@@ -968,6 +997,7 @@ export const en = {
 
   // ── Common ──
   "common.cancel": "Cancel",
+  "common.close": "Close",
   "common.loading": "Loading...",
   "common.unknownUser": "User",
   "common.encryptedChat": "Chat",
@@ -1004,6 +1034,7 @@ export const en = {
   "boot.authenticating": "Authenticating…",
   "boot.connectingServer": "Connecting to server…",
   "boot.syncingMessages": "Syncing messages…",
+  "boot.openingChats": "Opening chats…",
   "boot.loading": "Loading Forta Chat…",
   "boot.failed": "Failed to start Forta Chat",
   "boot.matrixUnreachable": "Couldn't reach the chat server",

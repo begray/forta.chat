@@ -16,6 +16,7 @@ import { Toggle } from "@/shared/ui/toggle";
 import Modal from "@/shared/ui/modal/Modal.vue";
 import EmojiPicker from "@/features/messaging/ui/EmojiPicker.vue";
 import { UserEditForm, CallProvidersSection } from "@/features/user-management";
+import { DeleteAccountButton } from "@/features/auth";
 import { StorageSettings, NotificationSettings, TorSettingsSection, DesktopSettingsSection, LocalAiSettingsSection } from "@/features/settings";
 import { useLiveQuery, isChatDbReady, getChatDb } from "@/shared/lib/local-db";
 import type { TelemetrySnapshot } from "@/shared/lib/telemetry";
@@ -187,9 +188,12 @@ const title = computed(() => {
     </div>
 
     <!-- ════════ Profile edit ════════ -->
-    <div v-if="settingsSubView === 'profile'" class="flex-1 overflow-y-auto">
+    <div v-if="settingsSubView === 'profile'" class="safe-bottom flex-1 overflow-y-auto">
       <div class="mx-auto max-w-2xl p-6">
         <UserEditForm />
+        <div class="mt-6 border-t border-neutral-grad-0 pt-4">
+          <DeleteAccountButton />
+        </div>
       </div>
     </div>
 
@@ -201,7 +205,7 @@ const title = computed(() => {
     </div>
 
     <!-- ════════ Appearance ════════ -->
-    <div v-else-if="settingsSubView === 'appearance'" class="flex-1 overflow-y-auto">
+    <div v-else-if="settingsSubView === 'appearance'" class="flex-1 overflow-y-auto pb-safe">
       <!-- Live Chat Preview (sticky) -->
       <div class="sticky top-0 z-10 border-b border-neutral-grad-0 bg-background-total-theme p-4">
         <div
@@ -545,12 +549,12 @@ const title = computed(() => {
     </div>
 
     <!-- ════════ Local AI (roadmap Phase 6) ════════ -->
-    <div v-else-if="settingsSubView === 'localAi'" class="flex-1 overflow-y-auto">
+    <div v-else-if="settingsSubView === 'localAi'" class="flex-1 overflow-y-auto pb-safe">
       <LocalAiSettingsSection />
     </div>
 
     <!-- ════════ About ════════ -->
-    <div v-else-if="settingsSubView === 'about'" class="flex-1 overflow-y-auto">
+    <div v-else-if="settingsSubView === 'about'" class="flex-1 overflow-y-auto pb-safe">
       <div class="p-4">
         <!-- App logo & name -->
         <div class="flex flex-col items-center pb-6 pt-4">

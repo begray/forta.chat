@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import { useAuthStore } from "@/entities/auth";
-import { getChatDb, isChatDbReady } from "@/shared/lib/local-db";
+import { ChannelRepository, ChatDatabase, getChatDb, isChatDbReady } from "@/shared/lib/local-db";
 import type { ChannelLastContent, LocalChannel } from "@/shared/lib/local-db";
 
 import type { Channel, ChannelPost } from "./types";
@@ -140,21 +140,54 @@ export const useChannelStore = defineStore("channel", () => {
       : false
   );
 
+  /** Bumped by `cleanup()` so an early cache read that resolves after a
+   *  logout / account switch is discarded instead of leaking stale channels. */
+  let sessionGeneration = 0;
+
   /** Cold-start render: load the persisted channel set from Dexie before the
    *  Pocketnet RPC response arrives. Tor + slow networks can delay
    *  `fetchChannels` by 10–20s, during which the sidebar would otherwise be
-   *  empty — users perceive that as "groups/channels disappeared" (WEE-24). */
-  async function hydrateFromDexie(): Promise<void> {
+   *  empty — users perceive that as "groups/channels disappeared" (WEE-24).
+   *
+   *  `cachedAddress` lets the sidebar read before `initChatDb()` has run
+   *  (cold boot, the DB singleton only appears after the Matrix setup starts),
+   *  the same way `loadCachedRooms` does — so channels paint together with the
+   *  cached rooms instead of after Matrix connects. */
+  async function hydrateFromDexie(cachedAddress?: string | null): Promise<void> {
     if (isHydrated.value) return;
-    if (!isChatDbReady()) return;
+    if (isChatDbReady()) {
+      try {
+        const stored = await getChatDb().channels.getAll();
+        if (stored.length > 0 && channels.value.length === 0) {
+          channels.value = stored.map(localToChannel);
+        }
+        isHydrated.value = true;
+      } catch (e) {
+        console.warn("[channel-store] hydrateFromDexie failed:", e);
+      }
+      return;
+    }
+    if (cachedAddress) await hydrateFromCachedDb(cachedAddress);
+  }
+
+  /** Early read through a short-lived DB handle (closed right away), before the
+   *  singleton exists. Leaves `isHydrated` false on an empty or failed read so
+   *  the DB-ready hydration still runs later. */
+  async function hydrateFromCachedDb(address: string): Promise<void> {
+    const generation = sessionGeneration;
+    let db: ChatDatabase | null = null;
     try {
-      const stored = await getChatDb().channels.getAll();
+      db = new ChatDatabase(address);
+      const stored = await new ChannelRepository(db).getAll();
+      if (generation !== sessionGeneration || isHydrated.value) return;
       if (stored.length > 0 && channels.value.length === 0) {
         channels.value = stored.map(localToChannel);
+        isHydrated.value = true;
       }
-      isHydrated.value = true;
     } catch (e) {
-      console.warn("[channel-store] hydrateFromDexie failed:", e);
+      console.warn("[channel-store] early cache hydration failed:", e);
+    } finally {
+      db?.close();
     }
   }
 
@@ -360,6 +393,7 @@ export const useChannelStore = defineStore("channel", () => {
   }
 
   const cleanup = () => {
+    sessionGeneration++;
     channels.value = [];
     activeChannelAddress.value = null;
     posts.value = new Map();

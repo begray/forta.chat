@@ -66,4 +66,25 @@ describe('PushService on iOS', () => {
     expect(events).toContain('voipTokenInvalidated');
     expect(voipGetToken).toHaveBeenCalled();
   });
+
+  // Each APNs server has its own Sygnal pushkin: a token from an Xcode build
+  // registered as fortaios.voip would be sent to the production server and fail.
+  it('registers the VoIP pusher under the app_id of the APNs server of its token', async () => {
+    voipGetToken.mockResolvedValueOnce({ token: 'voip-hex', environment: 'sandbox' });
+    const client = { setPusher: vi.fn().mockResolvedValue({}), getPushers: vi.fn().mockResolvedValue({ pushers: [] }) };
+    const { pushService } = await import('./push-service');
+    await pushService.init(client);
+
+    expect(client.setPusher).toHaveBeenCalledWith(
+      expect.objectContaining({ pushkey: 'voip-hex', app_id: 'fortaios.voip.sandbox' }),
+    );
+
+    const onToken = voipAddListener.mock.calls.find(([name]) => name === 'voipTokenReceived')?.[1] as
+      (data: { token: string }) => Promise<void>;
+    await onToken({ token: 'voip-hex-2' });
+    // Older native builds send no environment: production.
+    expect(client.setPusher).toHaveBeenCalledWith(
+      expect.objectContaining({ pushkey: 'voip-hex-2', app_id: 'fortaios.voip' }),
+    );
+  });
 });

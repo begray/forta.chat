@@ -3,16 +3,29 @@ import { createPinia, setActivePinia } from "pinia";
 
 import { useChannelStore } from "../channel-store";
 import { useAuthStore } from "@/entities/auth";
-import { getChatDb, isChatDbReady } from "@/shared/lib/local-db";
+import { ChatDatabase, getChatDb, isChatDbReady } from "@/shared/lib/local-db";
 import type { LocalChannel } from "@/shared/lib/local-db";
 
 vi.mock("@/entities/auth", () => ({
   useAuthStore: vi.fn(),
 }));
 
+const cachedDb = vi.hoisted(() => ({
+  stored: [] as unknown[],
+  read: null as Promise<unknown[]> | null,
+  close: vi.fn(),
+}));
+
 vi.mock("@/shared/lib/local-db", () => ({
   getChatDb: vi.fn(),
   isChatDbReady: vi.fn(),
+  // Short-lived handle opened by the early (pre-initChatDb) hydration.
+  ChatDatabase: vi.fn(function (this: { close: () => void }) {
+    this.close = cachedDb.close;
+  }),
+  ChannelRepository: vi.fn(function (this: { getAll: () => Promise<unknown[]> }) {
+    this.getAll = () => cachedDb.read ?? Promise.resolve([...cachedDb.stored]);
+  }),
 }));
 
 interface FakeChannelRepo {
@@ -48,6 +61,10 @@ describe("channel-store — Dexie hydration + persistence (WEE-24)", () => {
     vi.mocked(useAuthStore).mockReset();
     vi.mocked(getChatDb).mockReset();
     vi.mocked(isChatDbReady).mockReset();
+    vi.mocked(ChatDatabase).mockClear();
+    cachedDb.stored = [];
+    cachedDb.read = null;
+    cachedDb.close.mockClear();
   });
 
   // --- A1: cold-start render from Dexie before Pocketnet RPC ---
@@ -139,6 +156,62 @@ describe("channel-store — Dexie hydration + persistence (WEE-24)", () => {
     await store.hydrateFromDexie();
 
     expect(repo.getAll).toHaveBeenCalledTimes(1);
+  });
+
+  // --- cold boot: read the cache before initChatDb(), in parallel with rooms ---
+  it("reads channels through a short-lived DB handle when the singleton is not ready yet", async () => {
+    vi.mocked(isChatDbReady).mockReturnValue(false);
+    cachedDb.stored = [
+      { address: "early", name: "Early", avatar: "", lastContent: null, syncOrder: 0, updatedAt: 0 },
+    ];
+
+    const store = useChannelStore();
+    await store.hydrateFromDexie("me");
+
+    expect(ChatDatabase).toHaveBeenCalledWith("me");
+    expect(getChatDb).not.toHaveBeenCalled();
+    expect(store.channels.map((c) => c.address)).toEqual(["early"]);
+    expect(store.isHydrated).toBe(true);
+    expect(cachedDb.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("an empty early cache read leaves hydration open for the DB-ready pass", async () => {
+    vi.mocked(isChatDbReady).mockReturnValue(false);
+
+    const store = useChannelStore();
+    await store.hydrateFromDexie("me");
+
+    expect(store.isHydrated).toBe(false);
+    expect(cachedDb.close).toHaveBeenCalledTimes(1);
+
+    const repo = makeRepo([
+      { address: "late", name: "Late", avatar: "", lastContent: null, syncOrder: 0, updatedAt: 0 },
+    ]);
+    vi.mocked(isChatDbReady).mockReturnValue(true);
+    vi.mocked(getChatDb).mockReturnValue({ channels: repo } as never);
+    await store.hydrateFromDexie();
+
+    expect(store.channels.map((c) => c.address)).toEqual(["late"]);
+  });
+
+  it("discards an early cache read that resolves after cleanup (account switch)", async () => {
+    vi.mocked(isChatDbReady).mockReturnValue(false);
+    let resolveRead: (v: unknown[]) => void = () => {};
+    cachedDb.read = new Promise((resolve) => {
+      resolveRead = resolve;
+    });
+
+    const store = useChannelStore();
+    const pending = store.hydrateFromDexie("old-account");
+    store.cleanup();
+    resolveRead([
+      { address: "stale", name: "Stale", avatar: "", lastContent: null, syncOrder: 0, updatedAt: 0 },
+    ]);
+    await pending;
+
+    expect(store.channels).toEqual([]);
+    expect(store.isHydrated).toBe(false);
+    expect(cachedDb.close).toHaveBeenCalledTimes(1);
   });
 
   // --- A2: fetchChannels writes to Dexie so the next cold-start is non-empty ---

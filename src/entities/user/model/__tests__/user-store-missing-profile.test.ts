@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 
 const profiles: Record<string, { name: string } | null> = {};
+const rawRows: Record<string, { deleted?: boolean }> = {};
 const loadUsersInfo = vi.fn(async (_addrs: string[]) => {});
 
 vi.mock("@/app/providers/initializers/app-initializer", () => ({
@@ -18,6 +19,7 @@ vi.mock("@/app/providers/initializers/app-initializer", () => ({
     initApi: vi.fn(async () => {}),
     loadUsersInfo,
     getUserData: (addr: string) => profiles[addr] ?? null,
+    getRawUserProfile: (addr: string) => rawRows[addr] ?? null,
   }),
 }));
 
@@ -37,6 +39,7 @@ describe("user-store — server-confirmed missing profiles", () => {
     loadUsersInfo.mockReset();
     loadUsersInfo.mockImplementation(async () => {});
     for (const k of Object.keys(profiles)) delete profiles[k];
+    for (const k of Object.keys(rawRows)) delete rawRows[k];
   });
 
   afterEach(() => {
@@ -112,5 +115,34 @@ describe("user-store — server-confirmed missing profiles", () => {
     await store.loadUsersBatch(["Ghost", "Alice"]);
     expect(loadUsersInfo).toHaveBeenLastCalledWith(["Alice"]);
     expect(store.users.Alice?.name).toBe("Alice");
+  });
+
+  it("never asks again for an account the chain reports as deleted, across restarts", async () => {
+    profiles.Gone = null;
+    rawRows.Gone = { deleted: true };
+    await store.loadUsersBatch(["Gone"]);
+    expect(loadUsersInfo).toHaveBeenCalledTimes(1);
+
+    // Far past every missing-profile TTL, and after an app restart.
+    vi.setSystemTime(1_000_000 + 24 * 60 * 60 * 1000);
+    setActivePinia(createPinia());
+    const restarted = useUserStore();
+    await restarted.loadUsersBatch(["Gone"]);
+    restarted.loadUserIfMissing("Gone");
+    await flush();
+    expect(loadUsersInfo).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(localStorage.getItem("bastyon-chat-deleted-users") ?? "[]")).toEqual(["Gone"]);
+  });
+
+  it("keeps the short pause for an unregistered address (e.g. own account mid-registration)", async () => {
+    // Not on the chain yet: no row at all, so no `deleted` flag.
+    profiles.Newcomer = null;
+    await store.loadUsersBatch(["Newcomer"]);
+    vi.setSystemTime(1_000_000 + 30_000 + 1);
+    profiles.Newcomer = { name: "Newcomer" };
+    await store.loadUsersBatch(["Newcomer"]);
+    expect(loadUsersInfo).toHaveBeenCalledTimes(2);
+    expect(store.users.Newcomer?.name).toBe("Newcomer");
+    expect(localStorage.getItem("bastyon-chat-deleted-users")).toBeNull();
   });
 });

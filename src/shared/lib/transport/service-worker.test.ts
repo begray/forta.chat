@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const SW_SOURCE = readFileSync(resolve(process.cwd(), "public/service-worker.js"), "utf8");
 const TOR_PROXY = "http://127.0.0.1:8181/";
@@ -21,9 +21,16 @@ interface FetchCall {
   init?: ProxyInit;
 }
 
-function loadCapacitorWorker(torActive: boolean) {
+interface NetworkStatsEvent {
+  status: string;
+  url: string;
+  bytesLength?: number;
+}
+
+function loadCapacitorWorker(torActive: boolean, respond: () => Response = () => new Response("{}", { status: 200 })) {
   const listeners = new Map<string, (event: FetchEventStub) => void>();
   const calls: FetchCall[] = [];
+  const stats: NetworkStatsEvent[] = [];
 
   // Chrome refuses a streaming request body without `duplex` — the TypeError
   // the Samsung logged for every Tor-routed request that carried a body.
@@ -34,14 +41,16 @@ function loadCapacitorWorker(torActive: boolean) {
       );
     }
     calls.push({ input, init });
-    return new Response("{}", { status: 200 });
+    return respond();
   };
 
   class Broadcaster {
     async invoke(): Promise<boolean> {
       return torActive;
     }
-    send(): void {}
+    send(channel: string, payload: NetworkStatsEvent): void {
+      if (channel === "network-stats") stats.push(payload);
+    }
   }
 
   const context = createContext({
@@ -82,7 +91,7 @@ function loadCapacitorWorker(torActive: boolean) {
     return answered;
   };
 
-  return { dispatch, answers, calls };
+  return { dispatch, answers, calls, stats };
 }
 
 describe("service worker on Capacitor, Tor route", () => {
@@ -135,5 +144,59 @@ describe("service worker on Capacitor, Tor route", () => {
     expect(answers(new Request(`${upload}?forta_direct=1`, { method: "POST", body: "x" }))).toBe(false);
     expect(answers(new Request(upload, { method: "POST", body: "x" }))).toBe(true);
     expect(calls).toHaveLength(0);
+  });
+});
+
+/** A body that sends `head` and then stays open until `finish` is called —
+ *  a large media file still on the wire. */
+function slowBody(head: Uint8Array) {
+  let finish: (tail: Uint8Array) => void = () => {};
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(head);
+      finish = (tail) => {
+        controller.enqueue(tail);
+        controller.close();
+      };
+    },
+  });
+  return { stream, finish: (tail: Uint8Array) => finish(tail) };
+}
+
+describe("service worker, response body", () => {
+  // A 17 MB video reached the page only once the worker had buffered all of
+  // it for the stats: no download progress, and the page's 30 s headers
+  // deadline fired on every retry.
+  it("answers the page on headers, before the body has arrived", async () => {
+    const body = slowBody(new Uint8Array(3));
+    const { dispatch, stats } = loadCapacitorWorker(false, () => new Response(body.stream, { status: 200 }));
+    const url = "https://matrix.pocketnet.app/_matrix/media/v3/download/matrix.pocketnet.app/abc";
+
+    const response = await dispatch(new Request(url));
+
+    expect(response.status).toBe(200);
+    expect(stats).toHaveLength(0);
+
+    const reader = response.body!.getReader();
+    expect((await reader.read()).value?.byteLength).toBe(3);
+    body.finish(new Uint8Array(5));
+    expect((await reader.read()).value?.byteLength).toBe(5);
+    expect((await reader.read()).done).toBe(true);
+
+    await vi.waitFor(() => expect(stats).toHaveLength(1));
+    expect(stats[0]).toMatchObject({ status: "success", url, bytesLength: 8 });
+  });
+
+  it("takes the stats size from Content-Length without reading the body", async () => {
+    const body = slowBody(new Uint8Array(3));
+    const { dispatch, stats } = loadCapacitorWorker(true, () => new Response(body.stream, {
+      status: 200,
+      headers: { "content-length": "17445368" },
+    }));
+
+    await dispatch(new Request("https://matrix.pocketnet.app/_matrix/media/v3/download/x/y"));
+
+    await vi.waitFor(() => expect(stats).toHaveLength(1));
+    expect(stats[0]).toMatchObject({ status: "success", bytesLength: 17445368 });
   });
 });

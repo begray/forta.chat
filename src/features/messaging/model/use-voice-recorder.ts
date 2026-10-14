@@ -5,6 +5,8 @@ import { useBugReport } from "@/features/bug-report";
 import { tRaw } from "@/shared/lib/i18n";
 import { classifyMicError, sendDiag, SendError } from "./send-errors";
 import { reportSendError } from "./send-error-bus";
+import { interruptVoicePlayback } from "./use-audio-playback";
+import { resampleWaveform, WAVEFORM_SAMPLES } from "./voice-waveform";
 
 export type RecorderState = "idle" | "recording" | "locked" | "preview";
 
@@ -29,6 +31,8 @@ export function useVoiceRecorder() {
   let durationTimer: ReturnType<typeof setInterval> | null = null;
   let waveformTimer: ReturnType<typeof setInterval> | null = null;
   let audioChunks: Blob[] = [];
+  /** Every sample of the recording; `waveformData` keeps only the live tail. */
+  let allSamples: number[] = [];
   let recordedMimeType = "";
 
   /** Compute RMS from frequency data (same as bastyon-chat generateRms) */
@@ -38,6 +42,8 @@ export function useVoiceRecorder() {
   };
 
   const startRecording = async () => {
+    // The mic must not record the voice message playing out of the speaker.
+    interruptVoicePlayback();
     try {
       sendDiag("voice:start");
       const t0 = Date.now();
@@ -91,6 +97,7 @@ export function useVoiceRecorder() {
       mediaRecorder.start();
       duration.value = 0;
       waveformData.value = [];
+      allSamples = [];
 
       // If getUserMedia took >500ms, a permission dialog was likely shown,
       // which breaks the touch-hold gesture. Auto-switch to "locked" (hands-free).
@@ -109,6 +116,7 @@ export function useVoiceRecorder() {
           analyser.getByteFrequencyData(freqData);
           const rms = computeRms(freqData);
           waveformData.value = [...waveformData.value.slice(-49), rms];
+          allSamples.push(rms);
         }
       }, 50);
     } catch (e) {
@@ -205,7 +213,7 @@ export function useVoiceRecorder() {
       state.value = "idle";
       return null;
     }
-    const waveform = [...waveformData.value];
+    const waveform = resampleWaveform(allSamples, WAVEFORM_SAMPLES);
     state.value = "idle";
     const ext = mimeToExt(blob.type);
     const file = new File([blob], `voice_${Date.now()}.${ext}`, { type: blob.type });
@@ -228,7 +236,7 @@ export function useVoiceRecorder() {
     const blob = recordedBlob.value;
     if (!blob) return null;
     const dur = await getAudioDuration(blob);
-    const waveform = [...waveformData.value];
+    const waveform = resampleWaveform(allSamples, WAVEFORM_SAMPLES);
     recordedBlob.value = null;
     state.value = "idle";
     const ext = mimeToExt(blob.type);

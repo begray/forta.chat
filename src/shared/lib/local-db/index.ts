@@ -41,7 +41,7 @@ export {
   localMessageTimelineId,
   sortLocalMessagesTimelineAsc,
 } from "./timeline-sort";
-export { RoomRepository } from "./room-repository";
+export { RoomRepository, needsSystemPreviewRepair } from "./room-repository";
 export type { RoomChange } from "./room-repository";
 export { ChannelRepository } from "./channel-repository";
 export { UserRepository } from "./user-repository";

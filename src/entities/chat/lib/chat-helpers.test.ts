@@ -284,6 +284,25 @@ describe("parseFileInfo", () => {
     expect(info!.secrets).toEqual({ block: 10, keys: "audiokeys", v: 1 });
   });
 
+  // Regression: an integer 1 among 0-1024 values stayed 1.0 (full height) and
+  // flattened every other bar into a dot.
+  it("scales every waveform value by 1024 when the array is integer-scaled", () => {
+    const content = {
+      body: "voice.ogg",
+      info: { mimetype: "audio/ogg", size: 8000, url: "https://url", waveform: [1, 0, 512, 1024] },
+    };
+    const info = parseFileInfo(content, "m.audio");
+    expect(info!.waveform).toEqual([1 / 1024, 0, 0.5, 1]);
+  });
+
+  it("keeps a waveform already in 0-1 floats", () => {
+    const content = {
+      body: "voice.ogg",
+      info: { mimetype: "audio/ogg", size: 8000, url: "https://url", waveform: [0.1, 0.5, 1] },
+    };
+    expect(parseFileInfo(content, "m.audio")!.waveform).toEqual([0.1, 0.5, 1]);
+  });
+
   it("parses m.audio without duration gracefully", () => {
     const content = {
       body: "clip.mp3",
@@ -792,6 +811,13 @@ describe("isUnresolvedName", () => {
     expect(isUnresolvedName("Боб")).toBe(false);
     expect(isUnresolvedName("John_Doe")).toBe(false);
     expect(isUnresolvedName("Perehvat_Upravleniya")).toBe(false);
+  });
+
+  // Regression: a long alphanumeric nickname was taken for an address and the
+  // chat list showed a skeleton instead of it.
+  it("accepts long alphanumeric nicknames that are not addresses", () => {
+    expect(isUnresolvedName("dgfgfhfhghfghfghfghf")).toBe(false);
+    expect(isUnresolvedName("SuperLongNickname2024xyz")).toBe(false);
   });
 });
 

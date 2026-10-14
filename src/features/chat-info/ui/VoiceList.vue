@@ -2,7 +2,7 @@
 import type { Message } from "@/entities/chat/model/types";
 import { useAuthStore } from "@/entities/auth";
 import { useFileDownload } from "@/features/messaging/model/use-file-download";
-import { useAudioPlayback } from "@/features/messaging/model/use-audio-playback";
+import { useAudioPlayback, playbackInfoFromMessage } from "@/features/messaging/model/use-audio-playback";
 import { formatDate } from "@/shared/lib/format";
 
 const props = defineProps<{
@@ -58,12 +58,7 @@ const togglePlay = async (msg: Message) => {
     url = result ?? null;
   }
   if (!url) return;
-  playback.togglePlay({
-    messageId: msg.id,
-    roomId: msg.roomId,
-    objectUrl: url,
-    duration: msg.fileInfo?.duration ?? 0,
-  });
+  playback.togglePlay(playbackInfoFromMessage(msg, url, msg.fileInfo?.duration ?? 0));
 };
 </script>
 
@@ -98,7 +93,7 @@ const togglePlay = async (msg: Message) => {
             class="contain-strict h-5 w-5 animate-spin rounded-full border-2 border-text-on-main-bg-color border-t-transparent"
           />
           <!-- Pause icon -->
-          <svg v-else-if="playback.isPlaying(msg.id).value" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+          <svg v-else-if="playback.isPlaying(msg._key || msg.id).value" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
             <rect x="6" y="4" width="4" height="16" rx="1" />
             <rect x="14" y="4" width="4" height="16" rx="1" />
           </svg>

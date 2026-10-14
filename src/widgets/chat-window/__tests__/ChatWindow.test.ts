@@ -109,11 +109,14 @@ vi.mock("@/shared/lib/i18n", () => ({
 }));
 
 // ── Mock audio/file/call/wallet/toast/paste-drop composables ──────
+const playbackStopSpy = vi.hoisted(() => vi.fn());
 vi.mock("@/features/messaging/model/use-audio-playback", () => ({
   useAudioPlayback: () => ({
     setOnEnded: vi.fn(),
-    currentRoomId: ref(null),
-    stop: vi.fn(),
+    // The room of the playing voice: the old code stopped playback when this
+    // room was left.
+    currentRoomId: ref("!a:matrix.org"),
+    stop: playbackStopSpy,
     play: vi.fn(),
   }),
 }));
@@ -123,6 +126,7 @@ vi.mock("@/features/messaging/model/use-file-download", () => ({
     getState: vi.fn(() => ({ objectUrl: null })),
     download: vi.fn(),
   }),
+  revokeFileUrlsOutsideRoom: vi.fn(),
 }));
 
 vi.mock("@/features/video-calls/model/call-service", () => ({
@@ -468,5 +472,27 @@ describe("ChatWindow — peer-keys banner", () => {
     expect(wrapper.text()).not.toContain("chat.peerKeysMissing");
     expect(wrapper.text()).toContain("chat.peerKeysRetry");
     wrapper.unmount();
+  });
+});
+
+describe("ChatWindow — voice playback outlives the chat", () => {
+  it("does not stop the voice player when the active room changes", async () => {
+    fakeRoomsInitialized.value = true;
+    fakeRooms.value = [
+      { id: "!a:matrix.org", name: "A", members: [] },
+      { id: "!b:matrix.org", name: "B", members: [] },
+    ];
+    fakeActiveRoomId.value = "!a:matrix.org";
+    const wrapper = mount(ChatWindow, mountOpts);
+    await flushPromises();
+
+    fakeActiveRoomId.value = "!b:matrix.org";
+    await flushPromises();
+    fakeActiveRoomId.value = null;
+    await flushPromises();
+
+    expect(playbackStopSpy).not.toHaveBeenCalled();
+    wrapper.unmount();
+    expect(playbackStopSpy).not.toHaveBeenCalled();
   });
 });

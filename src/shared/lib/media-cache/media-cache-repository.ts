@@ -130,6 +130,17 @@ export class MediaCacheRepository {
     return new Blob([blob], { type: entry.mime });
   }
 
+  /** Index-only presence check (no blob read, no LRU touch). Lets the UI pick
+   *  a "play" vs "download" affordance without paying for the read. Storage
+   *  drift is possible, so a `true` here is a hint, not a guarantee. */
+  async has(mxc: string): Promise<boolean> {
+    try {
+      return (await this.db.mediaCacheIndex.get(mxc)) !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
   /** Store `blob` under `mxc`, then enforce the size budget. Errors during
    *  the storage write surface to the caller (so `useFileDownload` knows
    *  the cache write didn't take), but failures during the eviction sweep

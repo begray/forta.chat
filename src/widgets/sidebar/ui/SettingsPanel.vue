@@ -15,6 +15,7 @@ import {
   hasTor,
   isElectron,
   isWeb,
+  isPkoinWalletEnabled,
   resolveAppUpdaterEnabled,
 } from "@/shared/lib/platform";
 import { AppPages } from "@/app/providers/router";
@@ -500,9 +501,9 @@ const handleLogout = () => {
           </svg>
         </button>
 
-        <!-- PKOIN Wallet Balance -->
+        <!-- PKOIN Wallet Balance (not shown on iOS; the wallet still runs) -->
         <div
-          v-if="walletStore.isAvailable"
+          v-if="walletStore.isAvailable && isPkoinWalletEnabled"
           class="flex items-center gap-3 rounded-lg px-3 py-3 transition-colors hover:bg-neutral-grad-0 cursor-pointer"
           @click="walletStore.refresh()"
         >

@@ -26,6 +26,9 @@ import com.forta.chat.plugins.calls.SelectAnswerPolicy
 import com.forta.chat.plugins.push.IncomingCallsStore
 import com.forta.chat.plugins.push.PushSessionPolicy
 import com.forta.chat.plugins.push.PushSessionStore
+import com.forta.chat.plugins.push.PushSenderPolicy
+import com.forta.chat.plugins.push.PushTokenStore
+import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -135,6 +138,13 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
             "sender=${data["sender"]}, sender_display_name=${data["sender_display_name"]}, " +
             "room_name=${data["room_name"]}, msg_type=${data["msg_type"]}, " +
             "content_msgtype=${data["content_msgtype"]}")
+
+        // A push through the pusher of another Firebase project (the one this
+        // app used before) duplicates the one through our own. See PushSenderPolicy.
+        if (!PushSenderPolicy.shouldDeliver(message.from, ownSenderIds(), PushTokenStore.isOwnPusherLive(this))) {
+            Log.i(TAG, "Push dropped: foreign sender ${message.from} (msg_type=${data["msg_type"]})")
+            return
+        }
 
         val roomId = data["room_id"] ?: return
 
@@ -421,10 +431,13 @@ class FortaFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         Log.d(TAG, "New FCM token: ${token.take(20)}...")
-        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString("fcm_token", token)
-            .apply()
+        PushTokenStore.onNewToken(this, token)
+    }
+
+    /** This build's Firebase project, as `RemoteMessage.from` names it: sender number and project id. */
+    private fun ownSenderIds(): List<String?> {
+        val options = runCatching { FirebaseApp.getInstance().options }.getOrNull() ?: return emptyList()
+        return listOf(options.gcmSenderId, options.projectId)
     }
 
     private fun previewByMsgtype(msgtype: String?): String {

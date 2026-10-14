@@ -2,7 +2,11 @@ import Dexie from "dexie";
 import type { ChatDatabase, LocalMessage, LocalMessageStatus } from "./schema";
 import { MessageType } from "@/entities/chat/model/types";
 import type { ReplyTo } from "@/entities/chat/model/types";
-import { sortLocalMessagesTimelineAsc } from "./timeline-sort";
+import {
+  compareLocalMessagesTimelineAsc,
+  localMessageTimelineId,
+  sortLocalMessagesTimelineAsc,
+} from "./timeline-sort";
 
 /** A LocalMessage URL is "optimistic-only" when it cannot survive a page
  *  reload — blob:/data: URLs are bound to the document lifetime and
@@ -951,6 +955,43 @@ export class MessageRepository {
       .limit(limit)
       .toArray();
     return sortLocalMessagesTimelineAsc(msgs);
+  }
+
+  /** The next unlistened voice message after `after` in the room — the voice
+   *  player's auto-advance (`voice-queue.ts`). `after` is the current message's
+   *  timestamp and timeline id (`eventId ?? clientId`, i.e. `Message.id`), so a
+   *  message sharing the timestamp is ordered by `compareLocalMessagesTimelineAsc`
+   *  instead of being dropped by an exclusive range. Skips deleted rows, rows
+   *  without a file, `excludeSenderId`'s own messages and listened ones. Reads
+   *  at most `scanLimit` rows so a long text tail after the last voice stays
+   *  cheap. */
+  async getNextAudioAfter(
+    roomId: string,
+    after: { timestamp: number; id: string },
+    opts: { excludeSenderId?: string; clearedAtTs?: number; scanLimit?: number } = {},
+  ): Promise<LocalMessage | undefined> {
+    const { excludeSenderId, clearedAtTs, scanLimit = 200 } = opts;
+    const lower = clearedAtTs !== undefined ? Math.max(after.timestamp, clearedAtTs) : after.timestamp;
+    const rows = await this.db.messages
+      .where("[roomId+timestamp]")
+      .between([roomId, lower], [roomId, Dexie.maxKey], true, true)
+      .limit(scanLimit)
+      .toArray();
+
+    const cursor = { timestamp: after.timestamp, eventId: after.id, clientId: after.id } as LocalMessage;
+    const candidates = sortLocalMessagesTimelineAsc(rows).filter((m) =>
+      compareLocalMessagesTimelineAsc(m, cursor) > 0 &&
+      (clearedAtTs === undefined || m.timestamp > clearedAtTs) &&
+      m.type === MessageType.audio &&
+      !m.deleted &&
+      !m.softDeleted &&
+      !!m.fileInfo?.url &&
+      (excludeSenderId === undefined || m.senderId !== excludeSenderId),
+    );
+    if (candidates.length === 0) return undefined;
+
+    const listened = await this.db.listenedMessages.bulkGet(candidates.map(localMessageTimelineId));
+    return candidates.find((_, i) => listened[i] === undefined);
   }
 
 }

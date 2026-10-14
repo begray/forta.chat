@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { isPkoinWalletEnabled } from "@/shared/lib/platform";
+
 interface Props {
   totalComments: number;
   isOwnPost: boolean;
@@ -17,8 +19,9 @@ const { t } = useI18n();
 
 <template>
   <div class="flex items-center gap-3 border-t border-neutral-grad-0 pt-3">
+    <!-- Boost: sends PKOIN — off on iOS -->
     <button
-      v-if="!isOwnPost"
+      v-if="!isOwnPost && isPkoinWalletEnabled"
       class="flex items-center gap-1.5 rounded-lg bg-color-bg-ac/10 px-3 py-1.5 text-xs font-medium text-color-bg-ac transition-colors hover:bg-color-bg-ac/20"
       @click="emit('boost')"
     >

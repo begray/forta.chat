@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import type { RecorderState } from "../model/use-voice-recorder";
+import { interruptVoicePlayback } from "../model/use-audio-playback";
 
 const { t } = useI18n();
 
@@ -104,6 +105,7 @@ const togglePreviewPlay = () => {
     previewAudio.value.pause();
     isPlaying.value = false;
   } else {
+    interruptVoicePlayback();
     previewAudio.value.play();
     isPlaying.value = true;
   }

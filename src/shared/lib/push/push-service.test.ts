@@ -3,8 +3,10 @@ import {
   PUSHER_APP_ID_ANDROID,
   PUSHER_APP_ID_IOS,
   PUSHER_APP_ID_IOS_VOIP,
+  PUSHER_APP_ID_IOS_VOIP_SANDBOX,
   buildPusherPayload,
   buildVoipPusherPayload,
+  isLegacyPusherEntry,
   isStalePusherEntry,
   shouldRunJsPushDecryption,
 } from './push-service';
@@ -116,6 +118,14 @@ describe('buildVoipPusherPayload (iOS PushKit)', () => {
     expect(payload.app_id).not.toBe(PUSHER_APP_ID_IOS);
   });
 
+  // A build installed from Xcode gets sandbox PushKit tokens, which only the
+  // APNs sandbox accepts; Sygnal reaches it through a separate pushkin.
+  it('uses fortaios.voip.sandbox for a sandbox token and fortaios.voip otherwise', () => {
+    expect(buildVoipPusherPayload('t', 'sandbox').app_id).toBe(PUSHER_APP_ID_IOS_VOIP_SANDBOX);
+    expect(PUSHER_APP_ID_IOS_VOIP_SANDBOX).toBe('fortaios.voip.sandbox');
+    expect(buildVoipPusherPayload('t', 'production').app_id).toBe('fortaios.voip');
+  });
+
   it('uses the VoIP token verbatim as pushkey (PKPushCredentials.token, NOT the regular APNs/FCM token)', () => {
     expect(buildVoipPusherPayload('pkt-abc').pushkey).toBe('pkt-abc');
   });
@@ -165,5 +175,26 @@ describe('isStalePusherEntry — VoIP pusher cleanup', () => {
       'new-fcm-token',
     );
     expect(stale).toBe(false);
+  });
+});
+
+// Moving to the `fortachat` Firebase project changes both the FCM token and
+// the app_id (fortaandroid -> fortaandroid2): the device's old pusher matched
+// neither stale rule and doubled every push.
+describe('isLegacyPusherEntry', () => {
+  it('flags the old-project pusher of this device whatever its app_id', () => {
+    expect(isLegacyPusherEntry({ pushkey: 'old-token' }, 'old-token', 'new-token')).toBe(true);
+  });
+
+  it('leaves other devices alone', () => {
+    expect(isLegacyPusherEntry({ pushkey: 'other-device' }, 'old-token', 'new-token')).toBe(false);
+  });
+
+  it('flags nothing without a legacy token', () => {
+    expect(isLegacyPusherEntry({ pushkey: 'old-token' }, null, 'new-token')).toBe(false);
+  });
+
+  it('never flags the pusher just registered', () => {
+    expect(isLegacyPusherEntry({ pushkey: 'same' }, 'same', 'same')).toBe(false);
   });
 });

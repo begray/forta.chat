@@ -1,14 +1,18 @@
 import { setupProviders } from "@/app/providers";
 import { AppLoading } from "@/app/ui/app-loading";
 import { bootStatus } from "@/app/model/boot-status";
+import { revealApp } from "@/app/model/reveal-app";
 import { createApp, type App } from "vue";
 
 import AppComponent from "./App.vue";
 
 const BOOT_TIMEOUT_MS = 60_000;
 
+let loadingApp: App | null = null;
+
 async function setupApp(): Promise<App | null> {
-  createApp(AppLoading).mount("#appLoading");
+  loadingApp = createApp(AppLoading);
+  loadingApp.mount("#appLoading");
   const app = createApp(AppComponent);
 
   app.config.errorHandler = (err, _instance, info) => {
@@ -46,3 +50,9 @@ async function setupApp(): Promise<App | null> {
 }
 
 export const app = setupApp();
+
+/** Mount the booted app; the boot loader stays over it briefly (see revealApp). */
+export function mountApp(booted: App): void {
+  if (loadingApp) revealApp(booted, loadingApp);
+  else booted.mount("#app");
+}

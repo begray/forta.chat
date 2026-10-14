@@ -24,6 +24,7 @@ import {
   startSyncStoreWorker,
   trackSyncStoreWorker,
 } from "./sync-store-worker";
+import { deleteIndexedDb, startSyncStoreWithReset } from "./sync-store-reset";
 import {
   pickLiveMatrixHost,
   nextMatrixHost,
@@ -339,19 +340,34 @@ export class MatrixClientService {
     // contain, it doesn't retroactively backfill an already-populated store.
     // The store runs in a Web Worker where the WebView supports it (see
     // sync-store-worker.ts), on the main thread otherwise.
-    const store = new sdk.IndexedDBStore({
-      indexedDB: window.indexedDB,
-      dbName: "matrix-js-sdk-v7:" + username,
-      localStorage: window.localStorage,
-      ...(useSyncStoreWorker ? { workerFactory: startSyncStoreWorker } : {}),
+    const dbName = "matrix-js-sdk-v7:" + username;
+    return startSyncStoreWithReset({
+      dbName,
+      create: () => {
+        const store = new sdk.IndexedDBStore({
+          indexedDB: window.indexedDB,
+          dbName,
+          localStorage: window.localStorage,
+          ...(useSyncStoreWorker ? { workerFactory: startSyncStoreWorker } : {}),
+        });
+        if (useSyncStoreWorker) trackSyncStoreWorker(store);
+        return store;
+      },
+      start: (store) => withTimeout(store.startup(), 10_000, "Matrix IndexedDB startup"),
+      release: releaseSyncStoreWorker,
+      deleteDb: (name) => withTimeout(deleteIndexedDb(window.indexedDB, name), 10_000, "Matrix IndexedDB delete"),
     });
-    if (useSyncStoreWorker) trackSyncStoreWorker(store);
-    try {
-      await withTimeout(store.startup(), 10_000, "Matrix IndexedDB startup");
-    } catch (e) {
-      console.error("Matrix IndexedDB startup error:", e);
-    }
-    return store;
+  }
+
+  /** Deactivate this account on the homeserver and erase its data (account
+   *  deletion). `auth` is the same object Pocketnet passes — its
+   *  matrixCredentials() — so the server sees an identical request. */
+  async deactivateAccount(): Promise<void> {
+    if (!this.client) throw new Error("No Matrix client");
+    if (!this.credentials) throw new Error("No credentials set");
+    const { address, username, password } = this.credentials;
+    const auth = { type: "m.login.password", user: address, username, address, password, sessionId: "" };
+    await this.client.deactivateAccount(auth as Parameters<MatrixClient["deactivateAccount"]>[0], true);
   }
 
   /** Main login/register + start client flow */

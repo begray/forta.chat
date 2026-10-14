@@ -10,6 +10,7 @@ import { useContacts } from "@/features/contacts";
 import { useToast } from "@/shared/lib/use-toast";
 import Toast from "@/shared/ui/toast/Toast.vue";
 import TitleBar from "@/widgets/title-bar/TitleBar.vue";
+import VoicePlayerBar from "@/widgets/voice-player-bar/VoicePlayerBar.vue";
 import IncomingCallModal from "@/features/video-calls/ui/IncomingCallModal.vue";
 import CallWindow from "@/features/video-calls/ui/CallWindow.vue";
 import CallStatusBar from "@/features/video-calls/ui/CallStatusBar.vue";
@@ -516,6 +517,9 @@ onUnmounted(() => {
       @cancel="handleCancelRegistration"
     />
     <TitleBar v-if="isElectron" />
+    <!-- In the flow, not floating: pushes the screen down instead of covering
+         chat headers. Voice playback outlives the chat it started in. -->
+    <VoicePlayerBar v-if="authStore.isAuthenticated" />
     <div class="relative min-h-0 flex-1 overflow-hidden">
       <transition :name="isMobile ? '' : 'fade'" mode="out-in">
         <router-view class="h-full" />

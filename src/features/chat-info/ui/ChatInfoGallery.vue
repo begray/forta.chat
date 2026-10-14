@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useChatStore } from "@/entities/chat";
+import { isForwardableMessage } from "@/entities/chat/lib/forwardable";
 import { useAuthStore } from "@/entities/auth";
 import { MessageType } from "@/entities/chat/model/types";
 import type { Message } from "@/entities/chat/model/types";
@@ -91,10 +92,11 @@ const ICONS = {
 };
 
 const ctxMenuItems = computed<ContextMenuItem[]>(() => {
-  const items: ContextMenuItem[] = [
-    { label: t("chatInfo.forward"), icon: ICONS.forward, action: "forward" },
-    { label: t("chatInfo.goToMessage"), icon: ICONS.goTo, action: "goToMessage" },
-  ];
+  const items: ContextMenuItem[] = [];
+  if (ctxMessage.value && isForwardableMessage(ctxMessage.value)) {
+    items.push({ label: t("chatInfo.forward"), icon: ICONS.forward, action: "forward" });
+  }
+  items.push({ label: t("chatInfo.goToMessage"), icon: ICONS.goTo, action: "goToMessage" });
   if (ctxMessage.value && ctxMessage.value.senderId === authStore.address) {
     items.push({ label: t("chatInfo.delete"), icon: ICONS.delete, action: "delete", danger: true });
   }

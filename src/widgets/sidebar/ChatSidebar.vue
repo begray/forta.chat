@@ -6,10 +6,10 @@ import { useChannelStore } from "@/entities/channel";
 import { useAiChatStore } from "@/entities/ai-chat";
 import { useLocalAiStore } from "@/entities/local-ai";
 import { InviteModal } from "@/features/invite";
-import { useWalletStore, formatPkoin } from "@/features/wallet";
-import { useChatStore } from "@/entities/chat";
+import { useWalletStore } from "@/features/wallet";
+import { useChatStore, resolveCachedRoomsAddress } from "@/entities/chat";
 import { useAuthStore } from "@/entities/auth";
-import { isNativePlatform, isLocalAiFeatureEnabled, logPlatformGate } from "@/shared/lib/platform";
+import { isNativePlatform, isLocalAiFeatureEnabled, logPlatformGate, isPkoinWalletEnabled } from "@/shared/lib/platform";
 import { ConnectionStatusHeader } from "@/features/sync-status";
 import { RoomListSkeleton } from "@/shared/ui/skeleton";
 import { SelectionBar, useSelectionStore } from "@/features/selection";
@@ -19,6 +19,7 @@ import BottomTabBar from "./ui/BottomTabBar.vue";
 import ContactsPanel from "./ui/ContactsPanel.vue";
 import SettingsPanel from "./ui/SettingsPanel.vue";
 import TorShieldIndicator from "./ui/TorShieldIndicator.vue";
+import WalletHeaderButton from "./ui/WalletHeaderButton.vue";
 import { useSidebarTab } from "./model/use-sidebar-tab";
 import type { SidebarTab } from "./model/use-sidebar-tab";
 import { shouldClearSearch, shouldResetFilter } from "./model/chat-back-actions";
@@ -52,7 +53,10 @@ onMounted(async () => {
   chatStore.loadCachedRooms();
   // Show persisted channel list immediately, then refresh from RPC in
   // the background — same pattern chatStore already uses for rooms (WEE-24).
-  await channelStore.hydrateFromDexie();
+  // Same cached address as loadCachedRooms, so on cold boot (DB singleton not
+  // up yet) channels are read in parallel with rooms and paint with them
+  // instead of after Matrix connects.
+  await channelStore.hydrateFromDexie(resolveCachedRoomsAddress());
   channelStore.fetchChannels(true);
 });
 
@@ -286,6 +290,11 @@ const sidebarFabMode = computed(() =>
 
 // Wallet in header
 const walletStore = useWalletStore();
+// "idle" with no balance = the first request has not started yet (it fires on
+// the address watch); show it as loading so the logo spins from the first frame.
+const isWalletLoading = computed(
+  () => walletStore.status === "loading" || (walletStore.status === "idle" && walletStore.balance === null),
+);
 </script>
 
 <template>
@@ -319,31 +328,14 @@ const walletStore = useWalletStore();
 
             <TorShieldIndicator />
 
-            <!-- PKOIN Wallet -->
-            <button
-              v-if="walletStore.isAvailable"
-              class="btn-press flex h-9 items-center gap-1.5 rounded-full bg-neutral-grad-0 px-2.5 text-text-color transition-colors hover:bg-neutral-grad-2/30"
-              :title="t('settings.wallet')"
-              @click="walletStore.refresh()"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 18 18"
-                fill="currentColor"
-                class="shrink-0 text-color-txt-ac"
-              >
-                <path fill-rule="evenodd" clip-rule="evenodd" d="M17.2584 1.97869L15.182 0L12.7245 2.57886C11.5308 1.85218 10.1288 1.43362 8.62907 1.43362C7.32722 1.43362 6.09904 1.74902 5.01676 2.30756L2.81787 6.45386e-05L0.741455 1.97875L2.73903 4.07498C1.49651 5.46899 0.741455 7.30694 0.741455 9.32124C0.741455 11.1753 1.38114 12.8799 2.45184 14.2264L0.741455 16.0213L2.81787 18L4.61598 16.1131C5.79166 16.8092 7.1637 17.2088 8.62907 17.2088C10.2903 17.2088 11.8317 16.6953 13.1029 15.8182L15.182 18L17.2584 16.0213L15.1306 13.7884C16.0049 12.5184 16.5167 10.9796 16.5167 9.32124C16.5167 7.50123 15.9003 5.8252 14.8648 4.49052L17.2584 1.97869ZM3.5551 9.32124C3.5551 12.1235 5.82679 14.3952 8.62907 14.3952C11.4313 14.3952 13.703 12.1235 13.703 9.32124C13.703 6.51896 11.4313 4.24727 8.62907 4.24727C5.82679 4.24727 3.5551 6.51896 3.5551 9.32124Z" />
-              </svg>
-              <span
-                v-if="walletStore.status === 'loading'"
-                class="text-xs text-text-on-main-bg-color animate-pulse"
-              >...</span>
-              <span
-                v-else-if="walletStore.balance !== null"
-                class="text-xs font-semibold text-color-txt-ac"
-              >{{ formatPkoin(walletStore.balance) }}</span>
-            </button>
+            <!-- PKOIN Wallet (not shown on iOS; the wallet still runs) -->
+            <WalletHeaderButton
+              v-if="walletStore.isAvailable && isPkoinWalletEnabled"
+              :balance="walletStore.balance"
+              :is-loading="isWalletLoading"
+              :has-error="walletStore.status === 'error'"
+              @refresh="walletStore.refresh()"
+            />
 
             <!-- New AI chat — contextual header button, only on the AI tab
                  (roadmap 4.3). Starts a chat immediately, no modal, like

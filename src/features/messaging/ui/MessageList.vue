@@ -34,6 +34,7 @@ import { useReadTracker } from "../model/use-read-tracker";
 import { decideFabAction, shouldAutoDismissBanner } from "../model/fab-decision";
 import UnreadBanner from "./UnreadBanner.vue";
 import { computeChatListStyle } from "./chat-list-style";
+import { pendingScroll, takePendingScroll } from "../model/pending-scroll";
 
 const chatStore = useChatStore();
 const authStore = useAuthStore();
@@ -509,6 +510,20 @@ const { scrollToMessage, scrollTarget } = useScrollToMessage(
   reversedItems,
   scrollerRef,
   getScrollContainer,
+);
+
+// A jump requested from outside the chat (voice mini-player): run it once the
+// target chat is open and its first page has settled.
+watch(
+  [pendingScroll, settled, switching, () => chatStore.activeRoomId],
+  () => {
+    // `settled` may still describe the previous room right after a switch.
+    if (!settled.value || switching.value) return;
+    if (chatStore.activeMessages[0]?.roomId !== chatStore.activeRoomId) return;
+    const messageId = takePendingScroll(chatStore.activeRoomId);
+    if (messageId) void scrollToMessage(messageId);
+  },
+  { immediate: true },
 );
 
 const handleReturnToLatest = async () => {

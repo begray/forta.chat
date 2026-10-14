@@ -84,8 +84,19 @@ const handleLogin = async () => {
         :disabled="authStore.isLoggingIn"
         class="flex h-11 w-full cursor-pointer items-center justify-center rounded-xl bg-color-bg-ac text-sm font-medium text-text-on-bg-ac-color transition-colors hover:bg-color-bg-ac-1 disabled:cursor-default disabled:opacity-50"
       >
-        <Spinner v-if="authStore.isLoggingIn" size="sm" class="mr-2" />
-        {{ authStore.isLoggingIn ? t("auth.signingIn") : t("auth.signIn") }}
+        <!-- The spinner hangs left of the label, out of the flow: the label
+             stays centered. Current color: the accent Spinner is invisible
+             on the accent button. Centered by inset-y-0 + my-auto, not a
+             translate: animate-spin's keyframe replaces `transform`, so a
+             -translate-y-1/2 was animated away each turn (the spinner bobbed). -->
+        <span class="relative">
+          <span
+            v-if="authStore.isLoggingIn"
+            data-testid="login-spinner"
+            class="contain-strict absolute inset-y-0 right-full my-auto mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+          />
+          {{ authStore.isLoggingIn ? t("auth.signingIn") : t("auth.signIn") }}
+        </span>
       </button>
     </form>
 

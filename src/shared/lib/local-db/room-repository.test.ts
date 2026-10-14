@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Dexie from "dexie";
 import "fake-indexeddb/auto";
-import { RoomRepository } from "./room-repository";
+import { RoomRepository, needsSystemPreviewRepair } from "./room-repository";
 import type { LocalRoom } from "./schema";
+import { MessageType } from "@/entities/chat/model/types";
 
 // ── Minimal in-memory Dexie database for tests ──────────────────────
 class TestDb extends Dexie {
@@ -196,6 +197,73 @@ describe("RoomRepository", () => {
 
       const b = await repo.getRoom("!b:s");
       expect(b!.name).toBe("Updated B");
+    });
+
+    // Regression: a room whose last event was a join/leave was stored without
+    // its template, so the chat list showed the bare sender address.
+    it("stores system meta and call info for a new room's system preview", async () => {
+      const systemMeta = { template: "system.joined", senderAddr: "PHDrmpw1abcdefghijklmnopqrstuvwxy" };
+      const callInfo = { callType: "voice" as const, missed: true, duration: 0 };
+      await repo.bulkSyncRooms([
+        {
+          id: "!sys:s", name: "Group", membership: "join", lastMessageTimestamp: 1000,
+          lastMessagePreview: "PHDrmpw1...", lastMessageType: MessageType.system,
+          lastMessageEventId: "$join", lastMessageSystemMeta: systemMeta, lastMessageCallInfo: callInfo,
+        },
+      ]);
+
+      const room = await repo.getRoom("!sys:s");
+      expect(room!.lastMessageSystemMeta).toEqual(systemMeta);
+      expect(room!.lastMessageCallInfo).toEqual(callInfo);
+    });
+
+    it("fills in system meta missing from an existing row for the same event", async () => {
+      await db.rooms.put(makeLocalRoom({
+        id: "!sys:s", lastMessageTimestamp: 1000, updatedAt: 1000,
+        lastMessagePreview: "PHDrmpw1...", lastMessageType: MessageType.system, lastMessageEventId: "$join",
+      }));
+      const systemMeta = { template: "system.left", senderAddr: "PHDrmpw1abcdefghijklmnopqrstuvwxy" };
+
+      await repo.bulkSyncRooms([
+        {
+          id: "!sys:s", lastMessageTimestamp: 1000, updatedAt: 1000,
+          lastMessageType: MessageType.system, lastMessageEventId: "$join", lastMessageSystemMeta: systemMeta,
+        },
+      ]);
+
+      expect((await repo.getRoom("!sys:s"))!.lastMessageSystemMeta).toEqual(systemMeta);
+    });
+
+    it("does not attach system meta to a different last event", async () => {
+      await db.rooms.put(makeLocalRoom({
+        id: "!sys:s", lastMessageTimestamp: 2000, updatedAt: 2000,
+        lastMessagePreview: "PHDrmpw1...", lastMessageType: MessageType.system, lastMessageEventId: "$newer",
+      }));
+
+      await repo.bulkSyncRooms([
+        {
+          id: "!sys:s", lastMessageTimestamp: 1000, updatedAt: 1000,
+          lastMessageType: MessageType.system, lastMessageEventId: "$older",
+          lastMessageSystemMeta: { template: "system.joined", senderAddr: "PAddr" },
+        },
+      ]);
+
+      expect((await repo.getRoom("!sys:s"))!.lastMessageSystemMeta).toBeUndefined();
+    });
+  });
+
+  describe("needsSystemPreviewRepair", () => {
+    const meta = { template: "system.left", senderAddr: "PAddr" };
+    const broken = { lastMessageType: MessageType.system, lastMessageEventId: "$e" };
+
+    it("is true for a system row without meta when the same event brings it", () => {
+      expect(needsSystemPreviewRepair(broken, { lastMessageEventId: "$e", lastMessageSystemMeta: meta })).toBe(true);
+    });
+
+    it("is false for another event, a row that has meta, or a text row", () => {
+      expect(needsSystemPreviewRepair(broken, { lastMessageEventId: "$x", lastMessageSystemMeta: meta })).toBe(false);
+      expect(needsSystemPreviewRepair({ ...broken, lastMessageSystemMeta: meta }, { lastMessageEventId: "$e", lastMessageSystemMeta: meta })).toBe(false);
+      expect(needsSystemPreviewRepair({ ...broken, lastMessageType: MessageType.text }, { lastMessageEventId: "$e", lastMessageSystemMeta: meta })).toBe(false);
     });
   });
 

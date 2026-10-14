@@ -2,11 +2,9 @@
 import { useAuthStore } from "@/entities/auth";
 import { useTorStore } from "@/entities/tor";
 import { getElectronAPI } from "@/shared/lib/platform";
-import { useSidebarTab } from "@/widgets/sidebar/model/use-sidebar-tab";
 
 const authStore = useAuthStore();
 const torStore = useTorStore();
-const { setTab } = useSidebarTab();
 const { t } = useI18n();
 const router = useRouter();
 
@@ -66,7 +64,7 @@ const torDotColor = computed(() => {
         v-if="torDotColor"
         class="tor-badge"
         :title="torStore.info || torStatusText"
-        @click="router.push({ name: 'ChatPage' }); setTab('settings')"
+        @click="router.push({ name: 'ChatPage', query: { tab: 'settings' } })"
       >
         <span
           class="tor-dot"

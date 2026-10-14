@@ -30,6 +30,8 @@ import com.forta.chat.plugins.locale.LocalePlugin
 import com.forta.chat.plugins.savemedia.SaveMediaPlugin
 import com.forta.chat.plugins.download.ModelDownloadPlugin
 import com.forta.chat.plugins.aiinference.AiInferencePlugin
+import com.forta.chat.plugins.videopip.PipExitPolicy
+import com.forta.chat.plugins.videopip.VideoPipPlugin
 import com.forta.chat.updater.AppUpdater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -193,6 +195,7 @@ class MainActivity : BridgeActivity() {
         registerPlugin(SaveMediaPlugin::class.java)
         registerPlugin(ModelDownloadPlugin::class.java)
         registerPlugin(AiInferencePlugin::class.java)
+        registerPlugin(VideoPipPlugin::class.java)
         // Must precede super.onCreate: that is where the Bridge — and with it
         // the WebViewClient that consults these listeners — is built.
         bridgeBuilder.addWebViewListener(renderProcessRecovery)
@@ -282,6 +285,20 @@ class MainActivity : BridgeActivity() {
         // re-apply status bar icon color and re-inject CSS vars.
         applyStatusBarAppearance()
         injectAllCssVars()
+    }
+
+    // Post video PiP (VideoPipPlugin): tell the page when the floating window
+    // expands back (the player returns to its place) or is closed (the video
+    // stops — see PipExitPolicy).
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        val dismissed = !isInPictureInPictureMode &&
+            PipExitPolicy.isDismissed(lifecycle.currentState)
+        (bridge?.getPlugin("VideoPip")?.instance as? VideoPipPlugin)
+            ?.onPipModeChanged(isInPictureInPictureMode, dismissed)
     }
 
     override fun onDestroy() {

@@ -2,7 +2,7 @@ import { PushNotifications } from '@capacitor/push-notifications';
 import { isIOS, isNative } from '@/shared/lib/platform';
 import { PushData, type PushPayload } from './push-data-plugin';
 import { isIncomingCallsEnabled, syncIncomingCallsSettingToNative } from './incoming-calls-setting';
-import { IOSVoIPPush } from './ios-voip-push';
+import { IOSVoIPPush, type ApsEnvironment } from './ios-voip-push';
 import { shouldRingForCallPush } from './call-push-dedup';
 import {
   CALL_HANGUP_PUSH_RULE_ID,
@@ -28,6 +28,14 @@ import { interopLog } from '@/shared/lib/interop';
  * pushkeys is scoped to the device's own `app_id` so iOS does not delete
  * Android's pusher and vice versa.
  *
+ * The app_id picks the Firebase project Sygnal sends through, and it must
+ * match the native configs (`google-services.json`, `GoogleService-Info.plist`):
+ * `fortaandroid`/`fortaios` are the old `forta-chat` project. The move to
+ * `fortachat` (`fortaandroid2`/`fortaios2`) is on hold, see
+ * docs/plans/2026-10-14-firebase-fortachat-migration.md. When it lands, the old
+ * pusher stays for installs that have not updated; an updated device removes
+ * its own (see {@link isLegacyPusherEntry}).
+ *
  * iOS uses TWO pushers in parallel:
  *   - `fortaios`     → regular APNs (FCM token) for non-call notifications.
  *   - `fortaios.voip` → APNs VoIP class (PushKit token) for `m.call.invite`
@@ -38,6 +46,9 @@ import { interopLog } from '@/shared/lib/interop';
  */
 export const PUSHER_APP_ID_IOS = 'fortaios';
 export const PUSHER_APP_ID_IOS_VOIP = 'fortaios.voip';
+/** VoIP pusher of a build installed from Xcode: its PushKit token is valid on
+ *  the APNs sandbox only, which Sygnal reaches through a separate pushkin. */
+export const PUSHER_APP_ID_IOS_VOIP_SANDBOX = 'fortaios.voip.sandbox';
 export const PUSHER_APP_ID_ANDROID = 'fortaandroid';
 const SYGNAL_PUSH_URL = 'https://matrix.pocketnet.app/_matrix/push/v1/notify';
 
@@ -75,15 +86,20 @@ export function buildPusherPayload(token: string, opts: { isIOS: boolean }): Pus
  * `m.call.invite[.video]` events to this pusher and uses APNs VoIP class
  * instead of normal-priority APNs so the OS wakes the app even from cold.
  *
+ * The app_id follows the token's APNs server ({@link ApsEnvironment}).
+ *
  * Pure function — exported for unit tests. The returned `device_display_name`
  * is intentionally distinct from the regular `'iOS'` pusher so the user
  * can tell them apart in `getPushers()` listings.
  */
-export function buildVoipPusherPayload(voipToken: string): PusherPayload {
+export function buildVoipPusherPayload(
+  voipToken: string,
+  environment: ApsEnvironment = 'production',
+): PusherPayload {
   return {
     pushkey: voipToken,
     kind: 'http',
-    app_id: PUSHER_APP_ID_IOS_VOIP,
+    app_id: environment === 'sandbox' ? PUSHER_APP_ID_IOS_VOIP_SANDBOX : PUSHER_APP_ID_IOS_VOIP,
     app_display_name: 'Forta Chat',
     device_display_name: 'iOS (VoIP)',
     lang: 'en',
@@ -103,6 +119,21 @@ export function isStalePusherEntry(
   currentToken: string,
 ): boolean {
   return p.app_id === currentAppId && p.pushkey !== currentToken;
+}
+
+/**
+ * Whether a pusher entry is this device's own older pusher: the one native
+ * reported for the FCM token it replaced, under any app_id. Moving to a new
+ * Firebase project changes both the token and the app_id (`fortaandroid` →
+ * `fortaandroid2`), so {@link isStalePusherEntry} never matches it, and left
+ * alone it doubles every push.
+ */
+export function isLegacyPusherEntry(
+  p: { pushkey?: string },
+  legacyToken: string | null,
+  currentToken: string,
+): boolean {
+  return !!legacyToken && legacyToken !== currentToken && p.pushkey === legacyToken;
 }
 
 /**
@@ -127,6 +158,7 @@ export const LOGOUT_UNREGISTER_TIMEOUT_MS = 3_000;
 class PushService {
   private fcmToken: string | null = null;
   private voipToken: string | null = null;
+  private voipEnvironment: ApsEnvironment = 'production';
   /** The last FCM token deletion; the next register() waits for it, or a quick
    *  login could register the very token that is being deleted. */
   private tokenReset: Promise<unknown> = Promise.resolve();
@@ -270,13 +302,15 @@ class PushService {
         }
         // Pusher is live — best-effort stale cleanup is a separate concern;
         // its failure must not invalidate the successful registration above.
+        const legacyToken = await this.confirmPusherRegistered(token);
         try {
           const { pushers } = await matrixClient.getPushers();
           for (const p of pushers) {
-            if (isStalePusherEntry(p, payload.app_id, token)) {
+            if (isStalePusherEntry(p, payload.app_id, token) || isLegacyPusherEntry(p, legacyToken, token)) {
               await matrixClient.setPusher({ ...p, kind: null });
             }
           }
+          if (legacyToken) await PushData.clearLegacyFcmToken({ token: legacyToken });
         } catch (pe) {
           console.warn('[PushService] Could not clean stale pushers:', pe);
         }
@@ -309,6 +343,23 @@ class PushService {
       );
     } catch {
       /* localStorage may be unavailable in degraded WebViews — non-fatal */
+    }
+  }
+
+  /**
+   * Android: tell native the pusher for `token` is live, so it starts dropping
+   * pushes from the old Firebase project, and get back the token of this
+   * device's older pusher to remove. Null on iOS, with no older pusher, or when
+   * native lacks the method.
+   */
+  private async confirmPusherRegistered(token: string): Promise<string | null> {
+    if (isIOS) return null;
+    try {
+      const { legacyToken } = await PushData.onPusherRegistered({ token });
+      return legacyToken ?? null;
+    } catch (e) {
+      console.warn('[PushService] onPusherRegistered failed:', e);
+      return null;
     }
   }
 
@@ -374,10 +425,15 @@ class PushService {
    * would leave a dead pusher on the homeserver and Sygnal would keep
    * trying to deliver to gone-app tokens forever.
    */
-  private async registerVoipPusher(matrixClient: any, voipToken: string): Promise<void> {
+  private async registerVoipPusher(
+    matrixClient: any,
+    voipToken: string,
+    environment: ApsEnvironment = 'production',
+  ): Promise<void> {
     if (!matrixClient) return;
     this.voipToken = voipToken;
-    const payload = buildVoipPusherPayload(voipToken);
+    this.voipEnvironment = environment;
+    const payload = buildVoipPusherPayload(voipToken, environment);
     try {
       await matrixClient.setPusher(payload);
       try {
@@ -829,8 +885,8 @@ class PushService {
     // voipTokenReceived listener.
     if (isIOS) {
       try {
-        await IOSVoIPPush.addListener('voipTokenReceived', async ({ token }) => {
-          await this.registerVoipPusher(matrixClient, token);
+        await IOSVoIPPush.addListener('voipTokenReceived', async ({ token, environment }) => {
+          await this.registerVoipPusher(matrixClient, token, environment);
         });
         await IOSVoIPPush.addListener('voipTokenInvalidated', async () => {
           // Best-effort cleanup of the stale VoIP pusher. We don't have
@@ -840,9 +896,9 @@ class PushService {
           // registerVoipPusher() pass.
           console.log('[PushService] VoIP token invalidated by iOS');
         });
-        const { token } = await IOSVoIPPush.getToken();
+        const { token, environment } = await IOSVoIPPush.getToken();
         if (token) {
-          await this.registerVoipPusher(matrixClient, token);
+          await this.registerVoipPusher(matrixClient, token, environment);
         }
       } catch (e) {
         console.warn('[PushService] IOSVoIPPush wiring failed:', e);
@@ -888,6 +944,7 @@ class PushService {
     const matrixClient = this.matrixClient;
     const fcmToken = this.fcmToken;
     const voipToken = this.voipToken;
+    const voipEnvironment = this.voipEnvironment;
     this.matrixClient = null;
     this.fcmToken = null;
     this.voipToken = null;
@@ -912,7 +969,7 @@ class PushService {
       removals.push(Promise.resolve().then(() => matrixClient.setPusher(payload)));
     }
     if (matrixClient && voipToken) {
-      const payload = { ...buildVoipPusherPayload(voipToken), kind: null };
+      const payload = { ...buildVoipPusherPayload(voipToken, voipEnvironment), kind: null };
       removals.push(Promise.resolve().then(() => matrixClient.setPusher(payload)));
     }
     if (!isIOS) {

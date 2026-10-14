@@ -5,7 +5,8 @@ import {
 import { PocketnetInstance } from "@/app/providers/chat-scripts/config/pocketnetinstance";
 import { blockchainWs } from "@/shared/lib/blockchain-ws";
 import { useChatStore } from "@/entities/chat";
-import { useUserStore } from "@/entities/user/model";
+import { useUserStore, type User } from "@/entities/user/model";
+import { feedProfileToUser } from "@/entities/user/lib/feed-profile";
 import { useCallStore } from "@/entities/call/model/call-store";
 import { useChannelStore } from "@/entities/channel/model/channel-store";
 import { useLocalAiStore } from "@/entities/local-ai";
@@ -67,6 +68,8 @@ import {
   createBackoffRetry,
 } from "../lib";
 import { connectMatrixWithRetry } from "../lib/connect-matrix-with-retry";
+import { runDeleteAccount, type DeleteAccountStep } from "../lib/delete-account";
+import { removePeertubeAccount } from "@/shared/lib/peertube/remove-peertube-account";
 import { armMatrixReconnect, onForeground } from "../lib/matrix-reconnect";
 import { createKeyPair } from "./key-pair";
 import { generateEncryptionKeys, clearEncryptionKeysCache } from "./encryption-keys";
@@ -1668,6 +1671,12 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
       destroyCallTabLock();
     }).catch(() => { /* ignore */ });
 
+    // Stop the voice player before its pinned blob URL is revoked below —
+    // playback no longer stops on chat switch, only on logout.
+    import("@/features/messaging/model/use-audio-playback").then(({ resetAudioPlaybackForLogout }) => {
+      resetAudioPlaybackForLogout();
+    }).catch(() => { /* ignore */ });
+
     import("@/features/messaging/model/use-file-download").then(({ revokeAllFileUrls }) => {
       revokeAllFileUrls();
     }).catch(() => { /* ignore */ });
@@ -2391,8 +2400,25 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
   const loadCollection = (txid: string) => appInitializer.loadCollection(txid);
   const getCachedCollection = (txid: string) => appInitializer.getCachedCollection(txid);
 
-  const getProfileFeed = (authorAddress: string, options?: { height?: number; startTxid?: string; count?: number }) =>
-    appInitializer.getProfileFeed(authorAddress, options);
+  /** An author's feed page. Profiles that came with it (rpc-ex) fill the user
+   *  store for addresses it doesn't know yet — no profile request for the
+   *  post author or the last commenter. */
+  const getProfileFeed = async (
+    authorAddress: string,
+    options?: { height?: number; startTxid?: string; count?: number },
+  ): Promise<unknown[]> => {
+    const page = await appInitializer.getProfileFeed(authorAddress, options);
+    seedUsersFromFeed(page.users);
+    return page.contents;
+  };
+
+  function seedUsersFromFeed(rows: Record<string, unknown>[]): void {
+    const userStore = useUserStore();
+    const fresh = rows
+      .map(feedProfileToUser)
+      .filter((u): u is User => !!u && !userStore.getUser(u.address));
+    if (fresh.length) userStore.setUsers(fresh);
+  }
 
   function setSyncStatusCallback(cb: (state: string, info?: { fromCache?: boolean }) => void) {
     _onSyncStatusCallback = cb;
@@ -2435,6 +2461,32 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     backgroundSyncManager.stop(targetAddress);
     sessionManager.removeSession(targetAddress);
     syncSessionsFromStorage();
+  };
+
+  /** Permanently delete the active account, as Pocketnet does (see
+   *  runDeleteAccount), then sign out: the Matrix account is gone and the
+   *  chain no longer has the profile. A second call joins the running one. */
+  let _deleteRun: Promise<void> | null = null;
+  const deleteAccount = (onProgress?: (step: DeleteAccountStep) => void): Promise<void> => {
+    if (_deleteRun) return _deleteRun;
+    const target = activeAddress.value ?? "";
+    _deleteRun = runDeleteAccount({
+      address: target,
+      isRegistered: (a) => appInitializer.checkUserRegistered(a),
+      getBalance: () => appInitializer.getActualBalance(),
+      removePeertube: async () => {
+        const sign = window.POCKETNETINSTANCE?.user.signature;
+        if (!sign) throw new Error("no signing key");
+        const hosts = await appInitializer.getPeertubeServers();
+        return removePeertubeAccount({ hosts, address: target, sign: () => sign("peertube") });
+      },
+      deactivateMatrix: () => getMatrixClientService().deactivateAccount(),
+      deleteOnChain: (a) => appInitializer.deleteAccountOnChain(a),
+      onProgress,
+    })
+      .then(() => logout())
+      .finally(() => { _deleteRun = null; });
+    return _deleteRun;
   };
 
   let _switching = false;
@@ -2546,6 +2598,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     inactiveAccounts,
     addAccount,
     removeAccount,
+    deleteAccount,
     switchAccount,
     /** Get unread count for a background account */
     getBackgroundUnreadCount: (addr: string) => backgroundSyncManager.getUnreadCount(addr),

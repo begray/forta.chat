@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import type { Message } from "@/entities/chat";
 import { MessageType } from "@/entities/chat";
+import { isForwardableMessage } from "@/entities/chat/lib/forwardable";
 import { useThemeStore } from "@/entities/theme";
 import { useMobile } from "@/shared/lib/composables/use-media-query";
 import { BottomSheet } from "@/shared/ui/bottom-sheet";
@@ -62,8 +63,10 @@ const menuItems = computed<ContextMenuItem[]>(() => {
   const items: ContextMenuItem[] = [
     { label: t("contextMenu.reply"), icon: ICONS.reply, action: "reply" },
     { label: t("contextMenu.copy"), icon: ICONS.copy, action: "copy" },
-    { label: t("contextMenu.forward"), icon: ICONS.forward, action: "forward" },
   ];
+  if (props.message && isForwardableMessage(props.message)) {
+    items.push({ label: t("contextMenu.forward"), icon: ICONS.forward, action: "forward" });
+  }
   if (isSavable.value) {
     items.push({ label: t("media.save"), icon: ICONS.save, action: "save" });
   }

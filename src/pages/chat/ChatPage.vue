@@ -10,8 +10,9 @@ import { useChannelStore } from "@/entities/channel";
 import { useAiChatStore } from "@/entities/ai-chat";
 import { useI18n } from "@/shared/lib/i18n";
 import { useSidebarTab } from "@/widgets/sidebar/model/use-sidebar-tab";
+import { useSidebarRouteSync } from "@/widgets/sidebar/model/use-sidebar-route-sync";
 import { useAndroidBackHandler } from "@/shared/lib/composables/use-android-back-handler";
-import { useAudioPlayback } from "@/features/messaging/model/use-audio-playback";
+import { setVisibleChatRoom } from "@/features/messaging/model/visible-chat-room";
 
 const chatStore = useChatStore();
 const authStore = useAuthStore();
@@ -19,6 +20,8 @@ const channelStore = useChannelStore();
 const aiChatStore = useAiChatStore();
 const { t } = useI18n();
 const { activeTab, settingsSubView, closeSettingsContent, setTab } = useSidebarTab();
+// Contacts / Settings / a settings section live in the route query, so Back steps out of them.
+useSidebarRouteSync();
 
 const isMobile = ref(window.innerWidth < 768);
 
@@ -54,12 +57,9 @@ onMounted(() => {
   window.addEventListener("resize", checkMobile);
 });
 
-const playback = useAudioPlayback();
-
 onUnmounted(() => {
   window.removeEventListener("resize", checkMobile);
   clearTimeout(resizeTimer);
-  playback.stop();
 });
 
 const onSelectRoom = () => {
@@ -112,6 +112,17 @@ const onGroupCreated = () => {
 const onCloseGroupCreation = () => {
   showGroupCreation.value = false;
 };
+
+// The room the user is looking at: ChatWindow is shown (not covered by the
+// sidebar, settings, group creation or an AI chat) and holds a room, not a channel.
+const visibleRoomId = computed(() => {
+  if (showGroupCreation.value || settingsSubView.value || aiChatStore.activeChatId) return null;
+  if (showSidebar.value && isMobile.value) return null;
+  if (channelStore.activeChannelAddress) return null;
+  return chatStore.activeRoomId ?? null;
+});
+watch(visibleRoomId, setVisibleChatRoom, { immediate: true });
+onUnmounted(() => setVisibleChatRoom(null));
 
 // Android back: close overlays or go back to sidebar
 useAndroidBackHandler("chat-group-creation", 70, () => {

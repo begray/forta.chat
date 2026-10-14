@@ -1,15 +1,52 @@
-import { ref, computed, shallowRef } from "vue";
+import { ref, computed, shallowRef, reactive } from "vue";
+import type { Message } from "@/entities/chat";
 import { isNative } from "@/shared/lib/platform";
 import { useBugReport } from "@/features/bug-report";
 import { tRaw } from "@/shared/lib/i18n";
+import { getChatDb, isChatDbReady } from "@/shared/lib/local-db";
+import { pinFileUrl, unpinFileUrl } from "./use-file-download";
+import {
+  cancelPrefetch,
+  fetchVoiceUrl,
+  findNextVoice,
+  prefetchNextVoice,
+  type VoiceCursor,
+} from "./voice-queue";
+import { ensureVoiceWaveform } from "./voice-waveform";
+import { claimActivePlayer, releaseActivePlayer } from "@/shared/lib/active-video-player";
 
 export type PlaybackState = "idle" | "loading" | "playing" | "paused" | "ended" | "failed";
 
-interface PlaybackInfo {
+export interface PlaybackInfo {
+  /** Stable key (`_key || id`): playback tracking and the file-cache key. */
   messageId: string;
   roomId: string;
   objectUrl: string;
   duration: number;
+  /** `Message.id`: the key of the "listened" mark and the timeline id. */
+  listenedId: string;
+  timestamp: number;
+  senderId: string;
+  /** Stored waveform (0-1), for the mini-player. */
+  waveform?: number[];
+}
+
+/** What the player knows about the current message, for the mini-player and
+ *  the auto-advance cursor. */
+export type PlaybackMeta = Omit<PlaybackInfo, "objectUrl" | "duration">;
+
+/** Build the player input for a voice message. */
+export function playbackInfoFromMessage(message: Message, objectUrl: string, duration: number): PlaybackInfo {
+  return {
+    messageId: message._key || message.id,
+    roomId: message.roomId,
+    objectUrl,
+    duration,
+    listenedId: message.id,
+    timestamp: message.timestamp,
+    senderId: message.senderId,
+    waveform: message.fileInfo?.waveform,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -105,9 +142,43 @@ const currentMessageId = ref<string | null>(null);
 const currentRoomId = ref<string | null>(null);
 const currentTime = ref(0);
 const duration = ref(0);
-const playbackRate = ref(1);
+const current = shallowRef<PlaybackMeta | null>(null);
 
-let onEndedCallback: ((messageId: string, roomId: string) => void) | null = null;
+const SPEEDS = [1, 1.5, 2];
+const PLAYBACK_RATE_KEY = "forta-voice-playback-rate";
+
+function loadPlaybackRate(): number {
+  try {
+    const saved = Number(localStorage.getItem(PLAYBACK_RATE_KEY));
+    return SPEEDS.includes(saved) ? saved : 1;
+  } catch {
+    return 1;
+  }
+}
+
+const playbackRate = ref(loadPlaybackRate());
+
+/** Voices the player marked listened in this session. Bubbles read the mark
+ *  from Dexie once on mount; this set turns their dot off live, including
+ *  bubbles that were not mounted while their voice played in the chain. */
+const listenedThisSession = reactive(new Set<string>());
+
+function markListened(listenedId: string) {
+  if (listenedThisSession.has(listenedId)) return;
+  listenedThisSession.add(listenedId);
+  if (!isChatDbReady()) return;
+  getChatDb().listened.markListened(listenedId).catch((e) => {
+    console.warn("[audio] markListened failed:", e);
+  });
+}
+
+/** Bumped by every play() and stop(): a pending auto-advance compares it to
+ *  know the user acted in the meantime. */
+let playGeneration = 0;
+
+function cursorOf(meta: PlaybackMeta): VoiceCursor {
+  return { roomId: meta.roomId, timestamp: meta.timestamp, id: meta.listenedId };
+}
 
 // Watchdog timeout for the loading → playing transition. encrypted blobs
 // occasionally hang `<audio>` such that neither loadedmetadata nor an error
@@ -172,6 +243,10 @@ function armLoadingWatchdog(messageId: string) {
   }, LOADING_WATCHDOG_MS);
 }
 
+/** File-cache key pinned for the current message: playback outlives chat
+ *  switches, so its blob URL must not be revoked with the chat's media. */
+let pinnedKey: string | null = null;
+
 function cleanup() {
   clearLoadingWatchdog();
   if (audio.value) {
@@ -179,26 +254,37 @@ function cleanup() {
     audio.value.removeAttribute("src");
     audio.value.load();
   }
+  if (pinnedKey !== null) {
+    unpinFileUrl(pinnedKey);
+    pinnedKey = null;
+  }
+  cancelPrefetch();
   audio.value = null;
   state.value = "idle";
+  current.value = null;
   currentMessageId.value = null;
   currentRoomId.value = null;
   currentTime.value = 0;
   duration.value = 0;
 }
 
+// The voice's <audio> lives outside the DOM, so the app-wide "one sound at a
+// time" listener can't see it — it claims the slot itself (from play(), while
+// still loading, and on every `play`), and a video that starts later stops it
+// through this handle.
+const VOICE_PLAYER = { pause: () => interruptVoicePlayback() };
+
 function setupAudioListeners(el: HTMLAudioElement) {
+  el.onplay = () => claimActivePlayer(VOICE_PLAYER);
+  el.onpause = () => releaseActivePlayer(VOICE_PLAYER);
   el.ontimeupdate = () => {
     currentTime.value = el.currentTime;
   };
   el.onended = () => {
-    const msgId = currentMessageId.value;
-    const roomId = currentRoomId.value;
     state.value = "ended";
     currentTime.value = 0;
-    if (msgId && roomId && onEndedCallback) {
-      onEndedCallback(msgId, roomId);
-    }
+    const meta = current.value;
+    if (meta) void advanceFrom(meta, playGeneration);
   };
   el.onerror = () => {
     clearLoadingWatchdog();
@@ -239,6 +325,56 @@ function setupAudioListeners(el: HTMLAudioElement) {
   }
 }
 
+/** Auto-advance: after a voice ends, play the next unlistened voice of the same
+ *  chat, whether or not that chat is still open. When there is none, the
+ *  player goes idle and the mini-player closes. */
+async function advanceFrom(meta: PlaybackMeta, generation: number) {
+  let next: Message | null = null;
+  let url: string | null = null;
+  try {
+    next = await findNextVoice(cursorOf(meta));
+    if (next) url = await fetchVoiceUrl(next);
+  } catch (e) {
+    console.warn("[audio] auto-advance failed:", e);
+  }
+  // The user replayed, picked another voice or stopped meanwhile. The
+  // generation catches a replay of the same voice still awaiting play(),
+  // while the state still reads "ended".
+  if (generation !== playGeneration || current.value !== meta || state.value !== "ended") return;
+  if (!next || !url) {
+    cleanup();
+    return;
+  }
+  await useAudioPlayback().play(playbackInfoFromMessage(next, url, next.fileInfo?.duration ?? 0));
+}
+
+/** Another sound source starts (a recording, a preview, a video, a call):
+ *  pause the voice, with no auto-resume. A voice still loading, or between
+ *  two voices of the chain, is stopped instead — its pending play() would
+ *  start the sound anyway. */
+export function interruptVoicePlayback(): void {
+  if (state.value === "playing" && audio.value) {
+    audio.value.pause();
+    state.value = "paused";
+  } else if (state.value === "loading" || state.value === "ended") {
+    playGeneration++;
+    cleanup();
+  }
+}
+
+// Any page media element that becomes audible (MediaViewer, post and feed
+// players, an unmuted video circle) stops the voice through the app-wide
+// one-sound rule (active-video-player) and VOICE_PLAYER. Calls interrupt it
+// separately (VoicePlayerBar).
+
+/** Logout: stop the voice and forget this account's session listened marks,
+ *  so the next account's bubbles do not inherit them. */
+export function resetAudioPlaybackForLogout() {
+  playGeneration++;
+  cleanup();
+  listenedThisSession.clear();
+}
+
 export function useAudioPlayback() {
   const isActive = (messageId: string) =>
     computed(() => currentMessageId.value === messageId);
@@ -252,8 +388,12 @@ export function useAudioPlayback() {
   });
 
   async function play(info: PlaybackInfo) {
+    playGeneration++;
     // Unlock audio session on first play (must be synchronous in user gesture)
     unlockAudio();
+    // Take the one-sound slot now, while still loading: a video that starts
+    // meanwhile stops this voice instead of being talked over.
+    claimActivePlayer(VOICE_PLAYER);
 
     if (currentMessageId.value === info.messageId && audio.value && state.value === "paused") {
       await audio.value.play();
@@ -266,8 +406,24 @@ export function useAudioPlayback() {
       state.value = "playing";
       return;
     }
+    // Pin before cleanup(): it releases the prefetch pin, which on auto-advance
+    // holds this very file — unpinned with its chat closed, the URL would be
+    // revoked right before <audio> gets it.
+    pinFileUrl(info.messageId);
     cleanup();
+    pinnedKey = info.messageId;
     state.value = "loading";
+    const meta: PlaybackMeta = {
+      messageId: info.messageId,
+      roomId: info.roomId,
+      listenedId: info.listenedId,
+      timestamp: info.timestamp,
+      senderId: info.senderId,
+      waveform: info.waveform,
+    };
+    current.value = meta;
+    // A voice auto-advanced to has no bubble mounted to decode its waveform.
+    ensureVoiceWaveform(info.messageId, info.waveform, info.objectUrl);
     currentMessageId.value = info.messageId;
     currentRoomId.value = info.roomId;
     duration.value = info.duration;
@@ -289,9 +445,18 @@ export function useAudioPlayback() {
       // The browser binds the play() Promise to the current user activation.
       el.src = info.objectUrl;
       await el.play();
+      // A newer play() or stop() took over while this one was starting; the
+      // watchdog now belongs to it.
+      if (current.value !== meta) return;
       clearLoadingWatchdog();
       state.value = "playing";
+      // Marked here, not in the bubble: the voice may play with no bubble
+      // mounted (auto-advance in a chat that is no longer open).
+      markListened(info.listenedId);
+      prefetchNextVoice(cursorOf(meta));
     } catch (e: unknown) {
+      // Superseded: the cleanup of a newer play() or stop() aborted this one.
+      if (current.value !== meta) return;
       clearLoadingWatchdog();
       const err = e as Error;
       console.error("[audio] play() rejected:", err.name, err.message);
@@ -319,6 +484,34 @@ export function useAudioPlayback() {
       audio.value.pause();
       state.value = "paused";
     }
+  }
+
+  /** Resume the paused voice — for controls that hold no object URL (the
+   *  mini-player). */
+  async function resume() {
+    if (!audio.value || state.value !== "paused") return;
+    // Same as play(): re-arms the iOS audio session after backgrounding.
+    unlockAudio();
+    claimActivePlayer(VOICE_PLAYER);
+    try {
+      await audio.value.play();
+      state.value = "playing";
+    } catch (e) {
+      console.warn("[audio] resume failed:", e);
+    }
+  }
+
+  /** Skip to the next voice of the chain, as if the current one ended (the
+   *  system "next track" control). The current one stays listened. */
+  function playNext() {
+    const meta = current.value;
+    if (!meta || !audio.value) return;
+    if (state.value !== "playing" && state.value !== "paused") return;
+    playGeneration++;
+    audio.value.pause();
+    state.value = "ended";
+    currentTime.value = 0;
+    void advanceFrom(meta, playGeneration);
   }
 
   function togglePlay(info: PlaybackInfo) {
@@ -349,23 +542,25 @@ export function useAudioPlayback() {
   }
 
   function cycleSpeed() {
-    const speeds = [1, 1.5, 2];
-    const idx = speeds.indexOf(playbackRate.value);
-    playbackRate.value = speeds[(idx + 1) % speeds.length];
+    const idx = SPEEDS.indexOf(playbackRate.value);
+    playbackRate.value = SPEEDS[(idx + 1) % SPEEDS.length];
     if (audio.value) audio.value.playbackRate = playbackRate.value;
+    try {
+      localStorage.setItem(PLAYBACK_RATE_KEY, String(playbackRate.value));
+    } catch { /* storage unavailable: the speed lasts for the session */ }
   }
 
-  function setOnEnded(cb: (messageId: string, roomId: string) => void) {
-    onEndedCallback = cb;
-  }
+  /** Marked listened by the player in this session (see `listenedThisSession`). */
+  const wasListened = (listenedId: string) => listenedThisSession.has(listenedId);
 
   function stop() {
+    playGeneration++;
     cleanup();
   }
 
   return {
-    state, currentMessageId, currentRoomId, currentTime, duration, playbackRate, progress,
-    isActive, isPlaying,
-    play, pause, togglePlay, seek, seekByRatio, skipForward, skipBackward, cycleSpeed, setOnEnded, stop,
+    state, current, currentMessageId, currentRoomId, currentTime, duration, playbackRate, progress,
+    isActive, isPlaying, wasListened,
+    play, pause, resume, playNext, togglePlay, seek, seekByRatio, skipForward, skipBackward, cycleSpeed, stop,
   };
 }

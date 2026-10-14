@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, toRef } from "vue";
 import { useFeedVideoPlayer } from "@/shared/lib/use-feed-video-player";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 interface Props {
   src: string | null;
@@ -21,6 +22,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 // Fired when all retries are exhausted — host may switch playback strategy.
 const emit = defineEmits<{ "fatal-error": [] }>();
+const { t } = useI18n();
 
 const containerRef = ref<HTMLElement | null>(null);
 const videoRef = ref<HTMLVideoElement | null>(null);
@@ -65,14 +67,15 @@ function formatTime(seconds: number): string {
     <img
       v-if="state === 'idle' && poster"
       :src="poster"
-      class="absolute inset-0 h-full w-full object-cover"
+      class="absolute inset-0 h-full w-full object-contain"
       alt=""
     />
 
     <!-- Video element -->
     <video
       ref="videoRef"
-      class="absolute inset-0 h-full w-full object-cover"
+      class="absolute inset-0 h-full w-full object-contain"
+      :poster="BLANK_VIDEO_POSTER"
       playsinline
       :muted="isMuted"
       preload="none"
@@ -109,12 +112,12 @@ function formatTime(seconds: number): string {
         <line x1="12" y1="8" x2="12" y2="12" />
         <line x1="12" y1="16" x2="12.01" y2="16" />
       </svg>
-      <span class="text-sm text-white/70">Ошибка воспроизведения</span>
+      <span class="text-sm text-white/70">{{ t("video.playbackError") }}</span>
       <button
         class="rounded-md bg-white/20 px-4 py-1.5 text-sm text-white hover:bg-white/30"
         @click.stop="togglePlay"
       >
-        Повторить
+        {{ t("video.retry") }}
       </button>
     </div>
 

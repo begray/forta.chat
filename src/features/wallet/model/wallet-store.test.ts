@@ -121,6 +121,41 @@ describe("wallet-store", () => {
     vi.useRealTimers();
   });
 
+  it("fetches the balance on creation without waiting for a block event", async () => {
+    mockRpc.mockResolvedValue({ balance: 7 });
+
+    const store = useWalletStore();
+    await vi.waitFor(() => expect(store.status).toBe("ready"));
+
+    expect(mockRpc).toHaveBeenCalledWith("getaddressinfo", ["PAddr1"]);
+    expect(store.balance).toBe(7);
+  });
+
+  it("fetches once the wallet becomes available after creation", async () => {
+    mockRpc.mockResolvedValue({ balance: 3 });
+    mockIsAuthenticated.value = false;
+
+    const store = useWalletStore();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockRpc).not.toHaveBeenCalled();
+
+    mockIsAuthenticated.value = true;
+    await vi.waitFor(() => expect(store.balance).toBe(3));
+  });
+
+  it("resets and refetches when the account changes", async () => {
+    mockRpc.mockImplementation((_m: string, [addr]: [string]) =>
+      Promise.resolve({ balance: addr === "PAddr1" ? 1 : 2 }),
+    );
+
+    const store = useWalletStore();
+    await vi.waitFor(() => expect(store.balance).toBe(1));
+
+    mockAddress.value = "PAddr2";
+    await vi.waitFor(() => expect(store.balance).toBe(2));
+    expect(mockRpc).toHaveBeenCalledWith("getaddressinfo", ["PAddr2"]);
+  });
+
   it("reset clears all state", async () => {
     mockRpc.mockResolvedValue({ balance: 10 });
 

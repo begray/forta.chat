@@ -13,6 +13,7 @@ import PostComments from "./PostComments.vue";
 import ArticleBody from "./ArticleBody.vue";
 import PostImageGallery from "./PostImageGallery.vue";
 import DonateModal from "@/features/wallet/ui/DonateModal.vue";
+import Modal from "@/shared/ui/modal/Modal.vue";
 import { useChatStore } from "@/entities/chat";
 import { parseVideoUrl } from "@/shared/lib/video-embed";
 import { normalizePocketnetImageUrl } from "@/shared/lib/image-url";
@@ -61,6 +62,12 @@ const images = computed(() =>
 );
 const showGallery = ref(false);
 
+/** The owner unmounts the modal on `close`; hide it first so the leave animation plays. */
+const isOpen = ref(true);
+const requestClose = () => {
+  isOpen.value = false;
+};
+
 const handleRate = async (value: number) => {
   await submitVote(value);
 };
@@ -86,7 +93,7 @@ const handleCommentSubmit = async (message: string) => {
 
 const onKeydown = (e: KeyboardEvent) => {
   // Escape over the open gallery closes only the gallery.
-  if (e.key === "Escape" && !showGallery.value) emit("close");
+  if (e.key === "Escape" && !showGallery.value) requestClose();
 };
 
 /** Load comments; for a shared comment link also load that comment (a reply
@@ -116,163 +123,121 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      @click.self="emit('close')"
-    >
-      <div
-        class="post-modal relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-neutral-grad-0 bg-background-total-theme shadow-2xl"
-      >
-        <!-- Close -->
-        <button
-          class="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/40 text-white transition-colors hover:bg-black/60"
-          @click="emit('close')"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
-
-        <!-- Content -->
-        <div class="flex-1 overflow-y-auto">
-          <!-- autoplay: the modal itself was opened by a deliberate tap on the
-               post/video, so starting playback here keeps it a single-tap
-               flow (WEE-82 / forta-bugs#963). -->
-          <VideoPlayer v-if="videoInfo" :url="post.url" autoplay />
-          <div v-else-if="images.length" class="max-h-80 overflow-hidden">
-            <img
-              :src="images[0]"
-              alt=""
-              class="w-full cursor-pointer object-cover"
-              loading="lazy"
-              data-testid="post-modal-image"
-              @click="showGallery = true"
-            />
-          </div>
-
-          <div class="flex flex-col gap-4 p-5 text-text-color">
-            <div class="cursor-pointer" @click="onAuthorClick">
-              <PostAuthor
-                :name="authorName"
-                :avatar-url="authorAvatarUrl"
-                :address="post.address"
-                :time="post.time"
-              />
-            </div>
-
-            <div v-if="isArticle || videoInfo" class="flex">
-              <span class="rounded-full bg-color-bg-ac/15 px-2 py-0.5 text-[10px] font-medium text-color-bg-ac">
-                {{ isArticle ? t("post.article") : t("post.video") }}
-              </span>
-            </div>
-
-            <h2 v-if="post.caption" class="select-text text-base font-bold leading-snug text-text-color">
-              {{ post.caption }}
-            </h2>
-
-            <ArticleBody
-              v-if="post.message"
-              :raw="post.message"
-              class="select-text text-sm leading-relaxed text-text-color/80"
-            />
-
-            <div v-if="post.tags.length" class="flex flex-wrap gap-1.5">
-              <span
-                v-for="tag in post.tags"
-                :key="tag"
-                class="rounded-full bg-color-bg-ac/10 px-2 py-0.5 text-[10px] text-color-bg-ac/70"
-              >#{{ tag }}</span>
-            </div>
-
-            <!-- Stars -->
-            <div class="flex flex-col gap-2 border-t border-neutral-grad-0 pt-3">
-              <div class="flex items-center gap-3">
-                <StarRating
-                  :model-value="myScore"
-                  :average="averageScore"
-                  :total-votes="totalVotes"
-                  :readonly="isOwnPost"
-                  :submitting="scoresSubmitting"
-                  @update:model-value="handleRate"
-                />
-                <div
-                  v-if="totalVotes > 0"
-                  class="flex items-center gap-1 rounded-full border border-neutral-grad-1 px-2.5 py-1 text-text-on-main-bg-color"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
-                  </svg>
-                  <span class="text-xs font-medium">{{ totalVotes }}</span>
-                </div>
-              </div>
-              <span v-if="hasVoted" class="text-[10px] text-text-on-main-bg-color">
-                {{ t("postPlayer.rated") }}
-              </span>
-            </div>
-
-            <!-- Actions -->
-            <PostActions
-              :total-comments="comments.length"
-              :is-own-post="isOwnPost"
-              @boost="handleBoost"
-              @share="handleShare"
-              @scroll-to-comments="scrollToComments"
-            />
-
-            <!-- Comments -->
-            <div ref="commentsRef" class="border-t border-neutral-grad-0 pt-3">
-              <PostComments
-                :comments="comments"
-                :loading="commentsLoading"
-                :submitting="commentsSubmitting"
-                @submit="handleCommentSubmit"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Donate modal -->
-      <DonateModal
-        :show="showDonateModal"
-        :receiver-address="boostAddress"
-        :receiver-name="authorName"
-        @close="closeBoost"
-      />
-
-      <PostImageGallery
-        v-if="showGallery && images.length"
-        :images="images"
-        @close="showGallery = false"
+  <Modal
+    :show="isOpen"
+    :aria-label="post.caption || authorName"
+    size="lg"
+    bare
+    @close="requestClose"
+    @closed="emit('close')"
+  >
+    <!-- autoplay: the modal itself was opened by a deliberate tap on the
+         post/video, so starting playback here keeps it a single-tap
+         flow (WEE-82 / forta-bugs#963). -->
+    <VideoPlayer v-if="videoInfo" :url="post.url" autoplay />
+    <div v-else-if="images.length" class="max-h-80 overflow-hidden">
+      <img
+        :src="images[0]"
+        alt=""
+        class="w-full cursor-pointer object-cover"
+        loading="lazy"
+        data-testid="post-modal-image"
+        @click="showGallery = true"
       />
     </div>
-  </Teleport>
+
+    <div class="flex flex-col gap-4 p-5 text-text-color">
+      <div class="cursor-pointer" @click="onAuthorClick">
+        <PostAuthor
+          :name="authorName"
+          :avatar-url="authorAvatarUrl"
+          :address="post.address"
+          :time="post.time"
+        />
+      </div>
+
+      <div v-if="isArticle || videoInfo" class="flex">
+        <span class="rounded-full bg-color-bg-ac/15 px-2 py-0.5 text-[10px] font-medium text-color-bg-ac">
+          {{ isArticle ? t("post.article") : t("post.video") }}
+        </span>
+      </div>
+
+      <h2 v-if="post.caption" class="select-text text-base font-bold leading-snug text-text-color">
+        {{ post.caption }}
+      </h2>
+
+      <ArticleBody
+        v-if="post.message"
+        :raw="post.message"
+        class="select-text text-sm leading-relaxed text-text-color/80"
+      />
+
+      <div v-if="post.tags.length" class="flex flex-wrap gap-1.5">
+        <span
+          v-for="tag in post.tags"
+          :key="tag"
+          class="rounded-full bg-color-bg-ac/10 px-2 py-0.5 text-[10px] text-color-bg-ac/70"
+        >#{{ tag }}</span>
+      </div>
+
+      <!-- Stars -->
+      <div class="flex flex-col gap-2 border-t border-neutral-grad-0 pt-3">
+        <div class="flex items-center gap-3">
+          <StarRating
+            :model-value="myScore"
+            :average="averageScore"
+            :total-votes="totalVotes"
+            :readonly="isOwnPost"
+            :submitting="scoresSubmitting"
+            @update:model-value="handleRate"
+          />
+          <div
+            v-if="totalVotes > 0"
+            class="flex items-center gap-1 rounded-full border border-neutral-grad-1 px-2.5 py-1 text-text-on-main-bg-color"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
+            </svg>
+            <span class="text-xs font-medium">{{ totalVotes }}</span>
+          </div>
+        </div>
+        <span v-if="hasVoted" class="text-[10px] text-text-on-main-bg-color">
+          {{ t("postPlayer.rated") }}
+        </span>
+      </div>
+
+      <!-- Actions -->
+      <PostActions
+        :total-comments="comments.length"
+        :is-own-post="isOwnPost"
+        @boost="handleBoost"
+        @share="handleShare"
+        @scroll-to-comments="scrollToComments"
+      />
+
+      <!-- Comments -->
+      <div ref="commentsRef" class="border-t border-neutral-grad-0 pt-3">
+        <PostComments
+          :comments="comments"
+          :loading="commentsLoading"
+          :submitting="commentsSubmitting"
+          @submit="handleCommentSubmit"
+        />
+      </div>
+    </div>
+  </Modal>
+
+  <!-- Donate modal -->
+  <DonateModal
+    :show="showDonateModal"
+    :receiver-address="boostAddress"
+    :receiver-name="authorName"
+    @close="closeBoost"
+  />
+
+  <PostImageGallery
+    v-if="showGallery && images.length"
+    :images="images"
+    @close="showGallery = false"
+  />
 </template>
-
-<style scoped>
-.post-modal {
-  animation: modal-in 0.2s ease-out;
-}
-
-@keyframes modal-in {
-  from {
-    opacity: 0;
-    transform: scale(0.95) translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-@media (max-width: 640px) {
-  .post-modal {
-    max-height: 100vh;
-    max-height: 100dvh;
-    height: 100%;
-    max-width: 100%;
-    border-radius: 0;
-  }
-}
-</style>

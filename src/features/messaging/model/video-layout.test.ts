@@ -1,8 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  computeVideoAspectStyle,
-  resolveVideoDimensions,
-} from "./video-layout";
+import { computeVideoAspectStyle, resolveVideoDimensions, computeVideoBubbleWidth } from "./video-layout";
 
 describe("computeVideoAspectStyle (WEE-36 / forta-bugs#804)", () => {
   it("preserves portrait (9:16) ratio for vertical video", () => {
@@ -57,5 +54,19 @@ describe("resolveVideoDimensions", () => {
     expect(
       resolveVideoDimensions({ w: 0, h: 0 }, { w: 0, h: 0 }),
     ).toBeNull();
+  });
+});
+
+describe("computeVideoBubbleWidth", () => {
+  it("mobile: fills the row, capped so a vertical video stays within 60vh", () => {
+    expect(computeVideoBubbleWidth({ w: 720, h: 1280 }, false)).toBe("min(100%, calc(60vh * 0.5625))");
+  });
+
+  it("desktop: also stops at 640px", () => {
+    expect(computeVideoBubbleWidth({ w: 1920, h: 1080 }, true)).toBe("min(100%, calc(60vh * 1.7778), 640px)");
+  });
+
+  it("an unknown size counts as 16:9", () => {
+    expect(computeVideoBubbleWidth(null, false)).toBe("min(100%, calc(60vh * 1.7778))");
   });
 });

@@ -3,7 +3,12 @@ import type { UserData } from "./types";
 import { PocketnetInstanceConfigurator } from "../chat-scripts";
 import { PocketnetInstance } from "../chat-scripts/config/pocketnetinstance";
 import { withTimeout } from "@/shared/lib/with-timeout";
-import { loadArchivedPeertubeServers, setArchivedPeertubeServers } from "@/shared/lib/image-url";
+import { flattenPeertubeServers } from "@/shared/lib/peertube/remove-peertube-account";
+import {
+  hasFreshArchivedPeertubeServers,
+  loadArchivedPeertubeServers,
+  setArchivedPeertubeServers,
+} from "@/shared/lib/image-url";
 import { PROXY_NODES } from "@/shared/config/constants";
 import { toBastyonCollectionData, type BastyonCollectionData } from "@/shared/lib/bastyon-collection";
 import {
@@ -16,6 +21,14 @@ import {
   unwrapRpcPayload,
   buildNodeBaseUrls,
 } from "@/shared/lib/pocketnet";
+import { primePeerTubeSources } from "@/shared/lib/video-embed";
+
+/** One page of `getprofilefeed`: posts, plus the profiles the page mentions. */
+export interface ProfileFeedPage {
+  contents: unknown[];
+  /** Raw `getuserprofile` rows (post authors, last commenters) — rpc-ex only. */
+  users: Record<string, unknown>[];
+}
 
 export type EditUserDataResult =
   | { success: true; action: unknown }
@@ -182,6 +195,10 @@ type OnLoadUserData = (userData: UserData) => void;
  *  indefinitely. A 15s bound converts that hang into a surfaced error so the
  *  caller can rotate to another proxy / show retry UX (WEE-23). */
 const REGISTRATION_RPC_TIMEOUT = 15_000;
+/** Bound for each network step of account deletion (unspents, server list, accDel). */
+const ACCOUNT_DELETE_TIMEOUT = 30_000;
+/** Bound for each step of the archived peertube hosts load (ping, SDK call). */
+const PEERTUBE_SERVERS_TIMEOUT = 10_000;
 
 /** Window for coalescing per-post getpagescores requests into one batched call. */
 const SCORE_BATCH_WINDOW_MS = 50;
@@ -319,22 +336,37 @@ export class AppInitializer {
   }
 
   /** Archived peertube hosts (image URL rewriting). Asked from the proxy that
-   *  answered the ping; without the Bastyon Api, straight from the first proxy. */
+   *  answered the ping; without the Bastyon Api, or when that path fails or
+   *  stalls, straight from the first proxy. Every step is bounded: a hung ping
+   *  or SDK call used to leave the cached promise pending forever, so avatars
+   *  on archived hosts never got rewritten and no retry ever ran. A stored list
+   *  younger than the TTL skips the request; on failure the stored list stays. */
   loadArchivedPeertubeServers(): Promise<void> {
     if (this.peertubeServersPromise) return this.peertubeServersPromise;
-    const load = (async () => {
-      const ready = await this.whenApiReady().catch(() => false);
-      const viaApi = ready && this.api
-        ? await this.api.api.peertubeserversList().catch(() => null)
-        : null;
+    if (hasFreshArchivedPeertubeServers()) return Promise.resolve();
+    const load: Promise<void> = (async (): Promise<boolean> => {
+      let viaApi: string[] | null | undefined = null;
+      try {
+        const ready = await withTimeout(this.whenApiReady(), PEERTUBE_SERVERS_TIMEOUT, "proxy ping");
+        // The list lives on the pinged proxy, not on Api itself (as in pocketnet).
+        const proxy = ready && this.api ? this.api.get.current() : undefined;
+        if (proxy) {
+          viaApi = await withTimeout(proxy.api.peertubeserversList(), PEERTUBE_SERVERS_TIMEOUT, "peertubeserversList");
+        }
+      } catch (e) {
+        console.warn("[appInit] peertubeserversList via Api failed, asking the proxy directly:", e);
+      }
       if (Array.isArray(viaApi) && viaApi.length > 0) {
         setArchivedPeertubeServers(viaApi);
-        return;
+        console.info(`[appInit] Loaded ${viaApi.length} archived peertube servers`);
+        return true;
       }
       const servers = await loadArchivedPeertubeServers(`https://${PROXY_NODES[0].host}:${PROXY_NODES[0].port}`);
+      return servers.length > 0;
+    })().then((loaded) => {
       // Nothing loaded: let the next fetchUserInfo retry ask again.
-      if (servers.length === 0) this.peertubeServersPromise = null;
-    })();
+      if (!loaded && this.peertubeServersPromise === load) this.peertubeServersPromise = null;
+    });
     this.peertubeServersPromise = load;
     return load;
   }
@@ -665,6 +697,33 @@ export class AppInitializer {
       console.error("[appInit] editUserData failed:", errMessage);
       return { success: false, reason, error: errMessage };
     }
+  }
+
+  /** Spendable PKOIN of the signed-in account after refreshing its unspents
+   *  (Pocketnet deleteaccount `prepare`). Null when the wallet is unavailable. */
+  async getActualBalance(): Promise<number | null> {
+    const account = this.actions?.getCurrentAccount?.();
+    if (!account) return null;
+    await withTimeout(account.updateUnspents(), ACCOUNT_DELETE_TIMEOUT, "updateUnspents");
+    return account.actualBalance().actual;
+  }
+
+  /** Video servers of every peertube group (`peertube/allservers`), deduplicated. */
+  async getPeertubeServers(): Promise<string[]> {
+    if (!this.api) return [];
+    await this.initApi();
+    const data = await withTimeout(this.api.fetch("peertube/allservers"), ACCOUNT_DELETE_TIMEOUT, "peertube/allservers");
+    return flattenPeertubeServers(data);
+  }
+
+  /** Broadcast Pocketnet's `accDel` transaction for `address`. Throws on failure. */
+  async deleteAccountOnChain(address: string): Promise<unknown> {
+    if (!this.actions) throw new Error("Actions not available");
+    return withTimeout(
+      this.actions.addActionAndSendIfCan(new DeleteAccount(), null, address),
+      ACCOUNT_DELETE_TIMEOUT,
+      "deleteAccount",
+    );
   }
 
   initApi() {
@@ -1382,37 +1441,56 @@ export class AppInitializer {
     }
   }
 
+  /**
+   * One page of an author's feed. Asked through `rpc-ex`, which also returns
+   * the PeerTube video objects of the page (seeded into the playback sources
+   * cache — no per-video API call) and profiles of the authors involved (post
+   * authors, last commenters). Nodes without `rpc-ex` fall back to `rpc`.
+   */
   async getProfileFeed(
     authorAddress: string,
     options?: { height?: number; startTxid?: string; count?: number }
-  ): Promise<any[]> {
+  ): Promise<ProfileFeedPage> {
+    const opts = options ?? {};
+    const parameters = [
+      Number(opts.height ?? 0),
+      opts.startTxid ?? "",
+      opts.count ?? 10,
+      "",   // lang
+      [],   // tagsfilter
+      [],   // type
+      [],   // reserved
+      [],   // reserved
+      [],   // tagsexcluded
+      "",   // keyword
+      authorAddress,
+    ];
+    type FeedPayload = unknown[] | { contents?: unknown[]; videos?: Record<string, unknown>; users?: unknown[] };
+    const ask = (endpoint: "rpc" | "rpc-ex") =>
+      callPocketnetRpc<FeedPayload>({ method: "getprofilefeed", parameters, endpoint });
     try {
-      const opts = options ?? {};
-      const envelope = await callPocketnetRpc<unknown[] | { contents?: unknown[] }>({
-        method: "getprofilefeed",
-        parameters: [
-          Number(opts.height ?? 0),
-          opts.startTxid ?? "",
-          opts.count ?? 10,
-          "",   // lang
-          [],   // tagsfilter
-          [],   // type
-          [],   // reserved
-          [],   // reserved
-          [],   // tagsexcluded
-          "",   // keyword
-          authorAddress,
-        ],
-      });
+      let envelope;
+      try {
+        envelope = await ask("rpc-ex");
+        if (envelope.error) throw new Error(String(envelope.error));
+      } catch (e) {
+        console.warn("[appInit] getProfileFeed rpc-ex failed, plain rpc:", e);
+        envelope = await ask("rpc");
+      }
       if (envelope.error) {
         console.error("[appInit] getProfileFeed RPC error:", envelope.error);
-        return [];
+        return { contents: [], users: [] };
       }
       const result = unwrapRpcPayload(envelope);
-      return Array.isArray(result) ? result : (result as { contents?: unknown[] })?.contents ?? [];
+      if (Array.isArray(result)) return { contents: result, users: [] };
+      primePeerTubeSources(result?.videos);
+      return {
+        contents: result?.contents ?? [],
+        users: Array.isArray(result?.users) ? (result.users as Record<string, unknown>[]) : [],
+      };
     } catch (e) {
       console.error("[appInit] getProfileFeed error (all nodes failed):", e);
-      return [];
+      return { contents: [], users: [] };
     }
   }
 

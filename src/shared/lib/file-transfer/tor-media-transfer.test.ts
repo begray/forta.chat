@@ -217,11 +217,92 @@ describe('downloadMediaViaTorFile', () => {
     const { downloadMediaViaTorFile } = await import('./tor-media-transfer');
     const blob = await downloadMediaViaTorFile('https://matrix.example/media');
 
-    expect(mockDownload).toHaveBeenCalledWith({
+    expect(mockDownload).toHaveBeenCalledWith(expect.objectContaining({
       url: 'https://matrix.example/media',
       authorization: undefined,
-    });
+      id: expect.stringMatching(/^tor-dl-/),
+    }));
     expect(blob.type).toBe('image/jpeg');
     expect(blob.size).toBeGreaterThan(0);
+  });
+
+  it('forwards native byte progress to the caller', async () => {
+    mockDownload.mockImplementation(async (opts: { onProgress: (p: number, l: number, t: number) => void }) => {
+      opts.onProgress(50, 500, 1000);
+      return { filePath: '/data/cache/download.bin', mimeType: 'video/mp4' };
+    });
+    const { downloadMediaViaTorFile } = await import('./tor-media-transfer');
+    const onProgress = vi.fn();
+
+    await downloadMediaViaTorFile('https://matrix.example/media', { onProgress });
+
+    expect(onProgress).toHaveBeenCalledWith({ loaded: 500, total: 1000 });
+  });
+
+  describe('deadlines', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('rejects with DownloadStalledError when the native side stops reporting', async () => {
+      // Regression: the native call has no deadline of its own on older
+      // builds, so a dead Tor circuit used to spin the bubble forever.
+      mockDownload.mockImplementation(() => new Promise(() => {}));
+      const { downloadMediaViaTorFile } = await import('./tor-media-transfer');
+
+      const p = downloadMediaViaTorFile('https://matrix.example/media', { idleTimeoutMs: 5_000 });
+      const assertion = expect(p).rejects.toMatchObject({ name: 'DownloadStalledError' });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await assertion;
+    });
+
+    it('progress events push the idle deadline back', async () => {
+      let report: ((p: number, l: number, t: number) => void) | null = null;
+      let finish: ((v: { filePath: string; mimeType: string }) => void) | null = null;
+      mockDownload.mockImplementation((opts: { onProgress: typeof report }) => {
+        report = opts.onProgress;
+        return new Promise((resolve) => { finish = resolve; });
+      });
+      const { downloadMediaViaTorFile } = await import('./tor-media-transfer');
+
+      const p = downloadMediaViaTorFile('https://matrix.example/media', { idleTimeoutMs: 5_000 });
+      await vi.advanceTimersByTimeAsync(4_000);
+      report!(10, 10, 100);
+      await vi.advanceTimersByTimeAsync(4_000);
+      finish!({ filePath: '/data/cache/download.bin', mimeType: 'video/mp4' });
+
+      await expect(p).resolves.toBeInstanceOf(Blob);
+    });
+
+    it('ignores events from a transfer it already gave up on', async () => {
+      // Regression: the native call keeps running after a cancel; its events
+      // moved the progress ring of the next attempt.
+      let report: ((p: number, l: number, t: number) => void) | null = null;
+      mockDownload.mockImplementation((opts: { onProgress: typeof report }) => {
+        report = opts.onProgress;
+        return new Promise(() => {});
+      });
+      const { downloadMediaViaTorFile } = await import('./tor-media-transfer');
+      const ac = new AbortController();
+      const onProgress = vi.fn();
+
+      const p = downloadMediaViaTorFile('https://matrix.example/media', { signal: ac.signal, onProgress });
+      ac.abort();
+      await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+      report!(50, 50, 100);
+
+      expect(onProgress).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('rejects with AbortError when the caller cancels', async () => {
+      mockDownload.mockImplementation(() => new Promise(() => {}));
+      const { downloadMediaViaTorFile } = await import('./tor-media-transfer');
+      const ac = new AbortController();
+
+      const p = downloadMediaViaTorFile('https://matrix.example/media', { signal: ac.signal });
+      ac.abort();
+
+      await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+    });
   });
 });

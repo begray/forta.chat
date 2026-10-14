@@ -8,6 +8,8 @@ import { useResolvedRoomName } from "@/entities/chat/lib/use-resolved-room-name"
 import { isUnresolvedName } from "@/entities/chat/lib/chat-helpers";
 import { useMobile } from "@/shared/lib/composables/use-media-query";
 import { useAndroidBackHandler } from "@/shared/lib/composables/use-android-back-handler";
+import { buildForwardSharePlan, buildMessagesSharePlan } from "../model/external-share-plan";
+import { canShareExternally, useExternalShare } from "../model/use-external-share";
 type FilterValue = "all" | "personal" | "groups";
 
 /** Fixed row height for RecycleScroller: 40px md avatar + 2×10px padding. */
@@ -146,6 +148,28 @@ const handleClose = () => {
   search.value = "";
   emit("close");
 };
+
+const { share, isSharing } = useExternalShare();
+
+/** Content that came from another app's share sheet is not shared back out. */
+const isShareExternalVisible = computed(() =>
+  canShareExternally && (isBulkMode.value || (!!chatStore.forwardingMessage && !chatStore.forwardingMessage.isExternalShare)),
+);
+
+/** Hand the forwarded message(s) to other apps. The picker stays open when
+ *  the user dismisses the share sheet, so they can still pick a chat. */
+const handleShareExternal = async () => {
+  const getAlias = (userId: string) => chatStore.getLocalAlias(userId);
+  const fwd = chatStore.forwardingMessage;
+  const plan = isBulkMode.value
+    ? buildMessagesSharePlan(chatStore.forwardingMessages, getAlias)
+    : fwd ? buildForwardSharePlan(fwd, getAlias) : null;
+  if (!plan) return;
+  const result = await share(plan);
+  if (result !== "shared") return;
+  if (isBulkMode.value) chatStore.exitSelectionMode();
+  handleClose();
+};
 </script>
 
 <template>
@@ -172,7 +196,21 @@ const handleClose = () => {
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
               </button>
               <span class="text-base font-semibold text-text-color">{{ t("forward.title") }}</span>
-              <div class="w-8" />
+              <button
+                v-if="isShareExternalVisible"
+                data-testid="forward-share-external"
+                class="flex h-8 w-8 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0 disabled:opacity-40"
+                :disabled="isSharing"
+                :title="t('forward.shareExternal')"
+                :aria-label="t('forward.shareExternal')"
+                @click="handleShareExternal"
+              >
+                <div v-if="isSharing" class="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><polyline points="16 6 12 2 8 6" /><line x1="12" y1="2" x2="12" y2="15" />
+                </svg>
+              </button>
+              <div v-else class="w-8" />
             </div>
 
             <!-- Search -->

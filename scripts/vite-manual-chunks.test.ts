@@ -24,4 +24,10 @@ describe("manualChunks", () => {
     expect(manualChunks("/app/node_modules/buffer/index.js")).toBe("crypto-polyfills");
     expect(manualChunks("/app/src/main.ts")).toBeUndefined();
   });
+
+  it("groups the lazily loaded Video.js player on both path separators", () => {
+    expect(manualChunks("/app/node_modules/@videojs/html/dist/default/define/video/player.js")).toBe("video-js");
+    expect(manualChunks("C:\\app\\node_modules\\@videojs\\spf\\dist\\default\\hls-video.js")).toBe("video-js");
+    expect(manualChunks("/app/node_modules/@lit/reactive-element/reactive-element.js")).toBe("video-js");
+  });
 });

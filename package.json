@@ -1,7 +1,7 @@
 {
   "name": "forta-chat",
   "private": true,
-  "version": "1.13.5",
+  "version": "1.13.6",
   "description": "Forta Chat — Decentralized Messenger",
   "author": {
     "name": "Forta",
@@ -61,6 +61,7 @@
     "@capgo/capacitor-webview-version-checker": "^8.2.1",
     "@noble/secp256k1": "^2.3.0",
     "@vee-validate/zod": "^4.13.2",
+    "@videojs/html": "10.0.1",
     "audio-recorder-polyfill": "^0.4.1",
     "axios": "^0.21.4",
     "bn.js": "^5.2.0",

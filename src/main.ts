@@ -10,9 +10,9 @@ import { Buffer } from "buffer";
 import { setupDeepLinkHandler } from "./app/providers/initializers/deep-link-handler";
 setupDeepLinkHandler();
 
-import { app } from "./app";
+import { app, mountApp } from "./app";
 
 app.then(app => {
   // On boot failure app is null — AppLoading stays mounted with error UI
-  if (app) app.mount("#app");
+  if (app) mountApp(app);
 });

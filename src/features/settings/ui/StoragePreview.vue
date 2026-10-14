@@ -5,6 +5,7 @@ import { displayName } from "../lib/storage-display";
 import { isNative } from "@/shared/lib/platform";
 import { ZoomableImage } from "@/shared/ui/zoomable-image";
 import { useAndroidBackHandler } from "@/shared/lib/composables/use-android-back-handler";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 interface Props {
   entry: MediaCacheIndexEntry;
@@ -228,6 +229,7 @@ const openExternally = async () => {
         <video
           v-else-if="isVideo && blobUrl"
           :src="blobUrl"
+          :poster="BLANK_VIDEO_POSTER"
           controls
           autoplay
           class="max-h-full max-w-full"

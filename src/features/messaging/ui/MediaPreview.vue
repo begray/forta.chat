@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import type { MediaFile } from "../model/use-media-upload";
+import { BLANK_VIDEO_POSTER } from "@/shared/lib/video-poster";
 
 const { t } = useI18n();
 
@@ -66,6 +67,7 @@ const toggleCaptionPosition = () => {
             <video
               v-else
               :src="activeFile.previewUrl"
+              :poster="BLANK_VIDEO_POSTER"
               controls
               class="max-h-full max-w-full"
             />

@@ -17,7 +17,7 @@ import {
   NetworkBlockedError,
 } from "@/shared/lib/network/typed-network-errors";
 import { waitForRoomCrypto } from "@/entities/matrix/model/wait-for-crypto";
-import { runFileDecrypt } from "./decrypt-queue";
+import { DecryptTimeoutError, runFileDecrypt } from "./decrypt-queue";
 import { createSemaphore } from "@/shared/lib/semaphore";
 import { getMediaCache, type MediaCacheCategory } from "@/shared/lib/media-cache";
 import { MATRIX_SERVER, MATRIX_MIRRORS } from "@/shared/config/constants";
@@ -27,6 +27,10 @@ import {
   downloadMediaViaTorFile,
   shouldUseNativeTorDownload,
 } from "@/shared/lib/file-transfer/tor-media-transfer";
+import {
+  fetchBlobWithProgress,
+  type TransferProgress,
+} from "@/shared/lib/file-transfer/fetch-blob-with-progress";
 
 /** Classify a message into the Settings → Storage tab buckets.
  *  - `media` = photos + videos + video circles
@@ -61,13 +65,26 @@ function classifyForCache(messageType: MessageType, mime: string | undefined): M
  *  - `unknown` — anything else (default before classification). */
 export type FileDownloadErrorKind = "crypto" | "network" | "unknown" | null;
 
+/** Stage of an in-flight download, for the bubble's progress UI. */
+export type FileDownloadPhase = "download" | "decrypt";
+
 interface FileDownloadState {
   loading: boolean;
   error: string | null;
   errorKind: FileDownloadErrorKind;
   objectUrl: string | null;
   blob: Blob | null;
+  /** Set while `loading`; null otherwise. */
+  phase: FileDownloadPhase | null;
+  /** Network progress 0–100 during the "download" phase; null when the
+   *  size is unknown (indeterminate). */
+  progress: number | null;
+  /** Bytes received so far (0 when unknown). */
+  loadedBytes: number;
 }
+
+/** Progress callback threaded through downloadAndDecrypt. */
+type DownloadProgressHandler = (phase: FileDownloadPhase, progress: TransferProgress | null) => void;
 
 /** Options for `download()`. `forceRefetch` is the retry-after-watchdog
  *  escape hatch: when a stuck encrypted blob never reaches loadedmetadata,
@@ -75,6 +92,10 @@ interface FileDownloadState {
  *  cached objectUrl and rerun fetch + decrypt with a fresh URL. */
 export interface DownloadOpts {
   forceRefetch?: boolean;
+  /** Background fetch nobody asked for (voice prefetch / auto-advance): on
+   *  failure only log and record the state — no toast, no bug-report modal
+   *  popping up on whatever screen is open. */
+  silent?: boolean;
 }
 
 /** Errors that mean "this ciphertext cannot be decrypted with the keys we
@@ -162,6 +183,8 @@ function pruneDedupMap(): void {
  *  the same (messageId, error) within the dedup window. */
 function shouldAutoReport(messageKey: string, err: unknown): boolean {
   if (isCryptoError(err)) return false;
+  // A slow device, not a bug; the bubble already offers a retry.
+  if (err instanceof DecryptTimeoutError) return false;
   if (
     err instanceof CryptoNotReadyError ||
     err instanceof NetworkBlockedError ||
@@ -363,7 +386,54 @@ function clearInstanceUrls(keys: Iterable<string>) {
   }
 }
 
-/** Revoke all cached blob URLs and clear the cache */
+/** Keys whose URL must outlive chat switches and consumer unmounts: the voice
+ *  message that is playing and the one prefetched after it. Ref-counted, since
+ *  the player and the prefetch may pin the same key. */
+const pinnedKeys = new Map<string, number>();
+
+/** Room the user has open, as last reported by `revokeFileUrlsOutsideRoom`.
+ *  `unpinFileUrl` frees a URL right away when its chat is no longer open. */
+let openRoomId: string | null = null;
+
+function revokeCachedKey(key: string) {
+  const url = cache.get(key);
+  if (url) {
+    try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+  }
+  cache.delete(key);
+  cacheRoomIds.delete(key);
+}
+
+/** Keep `key`'s blob URL alive across chat switches and consumer unmounts
+ *  until the matching `unpinFileUrl`. */
+export function pinFileUrl(key: string) {
+  pinnedKeys.set(key, (pinnedKeys.get(key) ?? 0) + 1);
+}
+
+/** Release a pin. When the last pin goes and nothing would keep the URL
+ *  otherwise (its chat is closed, or no consumer is mounted), revoke it now —
+ *  no later chat switch would sweep it. */
+export function unpinFileUrl(key: string) {
+  const count = pinnedKeys.get(key);
+  if (count === undefined) return;
+  if (count > 1) {
+    pinnedKeys.set(key, count - 1);
+    return;
+  }
+  pinnedKeys.delete(key);
+  if (!cache.has(key)) return;
+  if (liveConsumers > 0 && cacheRoomIds.get(key) === openRoomId) return;
+  revokeCachedKey(key);
+  clearInstanceUrls([key]);
+}
+
+/** TEST-ONLY: number of pinned keys. */
+export function _pinnedKeyCountForTests(): number {
+  return pinnedKeys.size;
+}
+
+/** Revoke all cached blob URLs and clear the cache, pinned ones included
+ *  (logout). */
 export function revokeAllFileUrls() {
   const revoked = new Set(cache.keys());
   for (const url of cache.values()) {
@@ -371,22 +441,34 @@ export function revokeAllFileUrls() {
   }
   cache.clear();
   cacheRoomIds.clear();
+  pinnedKeys.clear();
+  clearInstanceUrls(revoked);
+}
+
+/** Revoke every cached blob URL except pinned ones. */
+function revokeUnpinnedFileUrls() {
+  const revoked = new Set<string>();
+  for (const key of [...cache.keys()]) {
+    if (pinnedKeys.has(key)) continue;
+    revokeCachedKey(key);
+    revoked.add(key);
+  }
   clearInstanceUrls(revoked);
 }
 
 /** Revoke every cached blob URL that does not belong to `roomId` (pass null to
- *  revoke everything). Called on chat switch: the decrypted bytes of the chat
+ *  revoke everything); pinned keys survive. Called on chat switch: the decrypted bytes of the chat
  *  we just left would otherwise pin RAM for the rest of the session, since the
  *  cache is only freed when the last `useFileDownload()` consumer unmounts.
  *  The persistent media cache still holds the bytes, so reopening that chat
  *  re-mints the URLs without a network round-trip. */
 export function revokeFileUrlsOutsideRoom(roomId: string | null) {
+  openRoomId = roomId;
   const revoked = new Set<string>();
-  for (const [key, url] of cache) {
+  for (const key of [...cache.keys()]) {
     if (roomId !== null && cacheRoomIds.get(key) === roomId) continue;
-    try { URL.revokeObjectURL(url); } catch { /* ignore */ }
-    cache.delete(key);
-    cacheRoomIds.delete(key);
+    if (pinnedKeys.has(key)) continue;
+    revokeCachedKey(key);
     revoked.add(key);
   }
   clearInstanceUrls(revoked);
@@ -401,11 +483,15 @@ export function invalidateDownloadCache(key: string) {
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 3000, 6000]; // 1s, 3s, 6s
 
-/** Hard timeout for a single fetch attempt. MIUI / Tor routinely keep TCP
- *  connections open with no data forever — unmitigated this hangs the UI
- *  indefinitely. 30s is long enough for slow 3G but short enough to surface
- *  a clear error to the user. */
+/** Deadline for the response headers of one fetch attempt. MIUI / Tor
+ *  routinely keep TCP connections open with no data forever — unmitigated
+ *  this hangs the UI indefinitely. 30s is long enough for slow 3G but short
+ *  enough to surface a clear error to the user. */
 const FETCH_TIMEOUT_MS = 30_000;
+
+/** Deadline between two body chunks. The headers deadline alone left a
+ *  connection that went silent mid-body spinning forever. */
+const FETCH_IDLE_TIMEOUT_MS = 30_000;
 
 /** Non-retriable HTTP status codes — fast-fail instead of burning the
  *  retry budget on a guaranteed-failure response. */
@@ -536,24 +622,6 @@ export function wrapTransientError(err: unknown, mxcUrl: string): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
 
-/** Fetch a URL with a hard timeout. Caller's AbortSignal is honored if
- *  provided. Returns the Response or throws AbortError on timeout. */
-async function fetchWithTimeout(url: string, signal?: AbortSignal): Promise<Response> {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
-  const abortOuter = () => ac.abort();
-  if (signal) {
-    if (signal.aborted) ac.abort();
-    else signal.addEventListener("abort", abortOuter, { once: true });
-  }
-  try {
-    return await fetch(url, { signal: ac.signal });
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abortOuter);
-  }
-}
-
 /** Download and optionally decrypt a file from the Matrix server.
  *  Retries up to MAX_RETRIES times on transient failures (network, crypto not ready).
  *
@@ -566,6 +634,7 @@ async function downloadAndDecrypt(
   senderId: string,
   timestamp: number,
   signal?: AbortSignal,
+  onProgress?: DownloadProgressHandler,
 ): Promise<Blob> {
   if (!fileInfo.url) throw new MissingUrlError();
   // Local-only schemes (blob:, data:) never reach the homeserver — they
@@ -600,6 +669,7 @@ async function downloadAndDecrypt(
       // with TypeError: Failed to fetch on every attempt.
       // On retry attempts, append a cache-bust so Service Workers / CDN edges
       // don't replay the prior failure response (issues #648, #641, #637).
+      let blob: Blob;
       const resolvedUrl = resolveMediaUrl(fileInfo.url);
       if (resolvedUrl === null) {
         // Cannot translate mxc:// — Matrix client missing or unknown baseUrl.
@@ -611,19 +681,20 @@ async function downloadAndDecrypt(
       // and for non-primary hosts.
       const hostUrl = rewriteMediaHost(resolvedUrl, mediaHostForAttempt(attempt));
       const fetchUrl = appendCacheBust(hostUrl, attempt);
-      let blob: Blob;
+      const reportDownload = (p: TransferProgress) => onProgress?.("download", p);
+      onProgress?.("download", null);
       if (shouldUseNativeTorDownload()) {
-        blob = await downloadMediaViaTorFile(fetchUrl);
+        blob = await downloadMediaViaTorFile(fetchUrl, { signal, onProgress: reportDownload });
       } else {
-        const response = await fetchWithTimeout(fetchUrl, signal);
-        if (!response.ok) {
-          const err = new Error(`Download failed: ${response.status}`);
-          // Mark non-retriable codes so the catch block below can throw immediately
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (err as any).status = response.status;
-          throw err;
-        }
-        blob = await response.blob();
+        // Non-2xx throws HttpStatusError carrying `.status`, which the catch
+        // block below uses to fast-fail non-retriable codes.
+        blob = await fetchBlobWithProgress(fetchUrl, {
+          signal,
+          onProgress: reportDownload,
+          expectedSize: fileInfo.size,
+          headersTimeoutMs: FETCH_TIMEOUT_MS,
+          idleTimeoutMs: FETCH_IDLE_TIMEOUT_MS,
+        });
       }
 
       // If the file has secrets, we need to decrypt it.
@@ -661,6 +732,7 @@ async function downloadAndDecrypt(
         };
 
         const decryptKey = await roomCrypto.decryptKey(event);
+        onProgress?.("decrypt", null);
         // Decrypt via the crypto Web Worker when available — parallel and
         // off the main thread (WEE-92); falls back to the legacy serial
         // main-thread queue otherwise (#306/#370 freeze guard).
@@ -685,6 +757,9 @@ async function downloadAndDecrypt(
       // error. Fast-fail so the friendly "ask sender to resend" UX appears
       // immediately.
       if (isCryptoError(e)) throw e;
+      // The device is too slow for this file. Another attempt would decrypt
+      // the same bytes just as slowly while the timed-out one still runs.
+      if (e instanceof DecryptTimeoutError) throw e;
       // Crypto-not-ready already paid 5 s of polling inside waitForRoomCrypto.
       // Re-entering the outer retry loop would burn another 1+3+6 s × 5 s of
       // polling = up to ~40 s before the user sees an error. Fast-fail and
@@ -870,6 +945,28 @@ async function saveFileNative(objectUrl: string, fileName: string, mimeType?: st
   }
 }
 
+/** Mirror a progress report into the reactive state. Writes only when the
+ *  whole percent changes: a 100 MB body arrives in thousands of chunks and a
+ *  reactive write per chunk would re-render the bubble each time. */
+function applyProgress(
+  state: FileDownloadState,
+  phase: FileDownloadPhase,
+  progress: TransferProgress | null,
+) {
+  if (state.phase !== phase) state.phase = phase;
+  if (phase !== "download" || !progress) {
+    state.progress = null;
+    state.loadedBytes = 0;
+    return;
+  }
+  const percent = progress.total > 0
+    ? Math.min(100, Math.floor((progress.loaded / progress.total) * 100))
+    : null;
+  if (percent === state.progress) return;
+  state.progress = percent;
+  state.loadedBytes = progress.loaded;
+}
+
 /** Composable for downloading and decrypting files/images */
 /** Live `useFileDownload()` consumers. The unmount cleanup below used to call
  *  `revokeAllFileUrls()` unconditionally, but the cache it clears is
@@ -892,7 +989,7 @@ export function useFileDownload() {
     onScopeDispose(() => {
       liveStateMaps.delete(states);
       liveConsumers = Math.max(0, liveConsumers - 1);
-      if (liveConsumers === 0) revokeAllFileUrls();
+      if (liveConsumers === 0) revokeUnpinnedFileUrls();
     });
   }
 
@@ -904,6 +1001,9 @@ export function useFileDownload() {
         errorKind: null,
         objectUrl: cache.get(eventId) ?? null,
         blob: null,
+        phase: null,
+        progress: null,
+        loadedBytes: 0,
       };
     }
     return states.value[eventId];
@@ -1066,6 +1166,7 @@ export function useFileDownload() {
           message.senderId,
           message.timestamp,
           signal,
+          (phase, progress) => applyProgress(state, phase, progress),
         );
       } finally {
         mediaDownloadGate.release();
@@ -1109,6 +1210,7 @@ export function useFileDownload() {
       // media-gone vs. keys-still-syncing) instead of just an in-bubble
       // retry button. Deduped per (cacheKey, errorKey) so background
       // re-attempts during the same glitch do not spam.
+      if (opts.silent) return null;
       surfaceTypedErrorToast(e, cacheKey);
       // Skip auto-report for crypto failures (user-actionable, not a bug) and
       // for duplicates within the dedup window. Manual reporting is still
@@ -1119,6 +1221,9 @@ export function useFileDownload() {
       return null;
     } finally {
       state.loading = false;
+      state.phase = null;
+      state.progress = null;
+      state.loadedBytes = 0;
     }
   };
 

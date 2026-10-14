@@ -466,6 +466,25 @@
     "@jridgewell/resolve-uri" "^3.1.0"
     "@jridgewell/sourcemap-codec" "^1.4.14"
 
+"@lit-labs/ssr-dom-shim@^1.5.0":
+  version "1.6.0"
+  resolved "https://registry.npmjs.org/@lit-labs/ssr-dom-shim/-/ssr-dom-shim-1.6.0.tgz"
+  integrity sha512-VHb0ALPMTlgKjM6yIxxoQNnpKyUKLD04VzeQdsiXkMqkvYlAHxq9glGLmgbb889/1GsohSOAjvQYoiBppXFqrQ==
+
+"@lit/context@^1.1.0":
+  version "1.1.6"
+  resolved "https://registry.npmjs.org/@lit/context/-/context-1.1.6.tgz"
+  integrity sha512-M26qDE6UkQbZA2mQ3RjJ3Gzd8TxP+/0obMgE5HfkfLhEEyYE3Bui4A5XHiGPjy0MUGAyxB3QgVuw2ciS0kHn6A==
+  dependencies:
+    "@lit/reactive-element" "^1.6.2 || ^2.1.0"
+
+"@lit/reactive-element@^1.6.2 || ^2.1.0":
+  version "2.1.2"
+  resolved "https://registry.npmjs.org/@lit/reactive-element/-/reactive-element-2.1.2.tgz"
+  integrity sha512-pbCDiVMnne1lYUIaYNN5wrwQXDtHaYtg7YEFPeW+hws6U47WeFvISGUWekPGKWOP1ygrs0ef0o1VJMk1exos5A==
+  dependencies:
+    "@lit-labs/ssr-dom-shim" "^1.5.0"
+
 "@malept/cross-spawn-promise@^2.0.0":
   version "2.0.0"
   resolved "https://registry.npmjs.org/@malept/cross-spawn-promise/-/cross-spawn-promise-2.0.0.tgz"
@@ -795,6 +814,72 @@
   dependencies:
     type-fest "^4.8.3"
     vee-validate "4.15.1"
+
+"@videojs/core@10.0.1":
+  version "10.0.1"
+  resolved "https://registry.npmjs.org/@videojs/core/-/core-10.0.1.tgz"
+  integrity sha512-N+f41wgFcmpe0QUhO0Q9sFHpMxKvr38ojkX5FlxAo3LKDAo2UrG2KIeklte+1VVae3oaJfP6J/KYtrRRObRxxw==
+  dependencies:
+    "@videojs/media" "10.0.1"
+    "@videojs/store" "10.0.1"
+    "@videojs/utils" "10.0.1"
+
+"@videojs/element@10.0.1":
+  version "10.0.1"
+  resolved "https://registry.npmjs.org/@videojs/element/-/element-10.0.1.tgz"
+  integrity sha512-s42yzkN3PH3573ZVcFRLNAXCbQTraXX9X/nUUVjx4NH3n36VGTmFiqJ3jrGhU+IWg4euasKyuVnwSp6qp4C1lg==
+  dependencies:
+    "@lit/context" "^1.1.0"
+
+"@videojs/html@10.0.1":
+  version "10.0.1"
+  resolved "https://registry.npmjs.org/@videojs/html/-/html-10.0.1.tgz"
+  integrity sha512-QAkGefFJU/u+w7ZNod4XyQSOBQ3Ij/uPHTO/hfW+ALlIeDYEsYzplQtHoLzU+Fh4mzHFhKKJI2iEW4x15fxj9Q==
+  dependencies:
+    "@videojs/core" "10.0.1"
+    "@videojs/element" "10.0.1"
+    "@videojs/media" "10.0.1"
+    "@videojs/native-hls-video" "10.0.1"
+    "@videojs/spf" "10.0.1"
+    "@videojs/store" "10.0.1"
+    "@videojs/utils" "10.0.1"
+
+"@videojs/media@10.0.1":
+  version "10.0.1"
+  resolved "https://registry.npmjs.org/@videojs/media/-/media-10.0.1.tgz"
+  integrity sha512-hMC2aS/8PovwJBi8y2qShC/amYfH6SBce7SZAM54qzRq8hl4FwWGFeUMMmXp8x4agRxLuCSqGqZg/EoGH2I5mQ==
+  dependencies:
+    "@videojs/utils" "10.0.1"
+
+"@videojs/native-hls-video@10.0.1":
+  version "10.0.1"
+  resolved "https://registry.npmjs.org/@videojs/native-hls-video/-/native-hls-video-10.0.1.tgz"
+  integrity sha512-MElgeDaxOJUj+OjHV3++TuW8TTgipTuzlRkfFDMMbnutlPLkSlX3VKhXo5ZNPhhXkt47oBVx4RGnAQJLWzilPw==
+  dependencies:
+    "@videojs/media" "10.0.1"
+    "@videojs/utils" "10.0.1"
+
+"@videojs/spf@10.0.1":
+  version "10.0.1"
+  resolved "https://registry.npmjs.org/@videojs/spf/-/spf-10.0.1.tgz"
+  integrity sha512-1HUTI1W++EKZuO3MaklFdEU/cEUhkJlKKuQx0Xi3VwjeHgVToAz7b1ySDH903KluPQy6cAGqXpro5Wt00y4DYA==
+  dependencies:
+    "@videojs/media" "10.0.1"
+    "@videojs/utils" "10.0.1"
+    signal-polyfill "^0.2.2"
+
+"@videojs/store@10.0.1":
+  version "10.0.1"
+  resolved "https://registry.npmjs.org/@videojs/store/-/store-10.0.1.tgz"
+  integrity sha512-BTkkTRHAU0XaZi+n3yWhtQJbe0BNjQLBd414u/s/nMZDz5bc1fp6b/voNbNriuSMd0Ro+ZmyzfPaMskiCa6GUQ==
+  dependencies:
+    "@videojs/utils" "10.0.1"
+    react-compiler-runtime "^1.0.0"
+
+"@videojs/utils@10.0.1":
+  version "10.0.1"
+  resolved "https://registry.npmjs.org/@videojs/utils/-/utils-10.0.1.tgz"
+  integrity sha512-S7WO9lPfyCz5YQYWtpE42JZTtJKUaiWaAZGAa+VLoBiFMfpoogCloSP4pjChTYcQ6sGcLlQJNxVKhM1RvI/Dig==
 
 "@vitejs/plugin-vue@^5.0.5":
   version "5.2.4"
@@ -3753,6 +3838,16 @@ quick-lru@^5.1.1:
   resolved "https://registry.npmjs.org/quick-lru/-/quick-lru-5.1.1.tgz"
   integrity sha512-WuyALRjWPDGtt/wzJiadO5AXY+8hZ80hVpe6MyivgraREW751X3SbhRvG3eLKOYN+8VEvqLcf3wdnt44Z4S4SA==
 
+react-compiler-runtime@^1.0.0:
+  version "1.0.0"
+  resolved "https://registry.npmjs.org/react-compiler-runtime/-/react-compiler-runtime-1.0.0.tgz"
+  integrity sha512-rRfjYv66HlG8896yPUDONgKzG5BxZD1nV9U6rkm+7VCuvQc903C4MjcoZR4zPw53IKSOX9wMQVpA1IAbRtzQ7w==
+
+"react@^17.0.0 || ^18.0.0 || ^19.0.0 || ^0.0.0-experimental", "react@^18.0.0 || ^19.0.0", react@>=16.14.0:
+  version "19.3.0"
+  resolved "https://registry.npmjs.org/react/-/react-19.3.0.tgz"
+  integrity sha512-E8LUcbtBWt20bbl2YoHfx4ZDBdxVTfOKtCZn9cDSJ4l6/nuoApcpIBcj47t2wZoVX8g2ZHuMHbiShgCR1T5Sog==
+
 read-binary-file-arch@^1.0.6:
   version "1.0.6"
   resolved "https://registry.npmjs.org/read-binary-file-arch/-/read-binary-file-arch-1.0.6.tgz"
@@ -4136,6 +4231,11 @@ signal-exit@^4.0.1:
   version "4.1.0"
   resolved "https://registry.npmjs.org/signal-exit/-/signal-exit-4.1.0.tgz"
   integrity sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==
+
+signal-polyfill@^0.2.2:
+  version "0.2.2"
+  resolved "https://registry.npmjs.org/signal-polyfill/-/signal-polyfill-0.2.2.tgz"
+  integrity sha512-p63Y4Er5/eMQ9RHg0M0Y64NlsQKpiu6MDdhBXpyywRuWiPywhJTpKJ1iB5K2hJEbFZ0BnDS7ZkJ+0AfTuL37Rg==
 
 simple-update-notifier@2.0.0:
   version "2.0.0"
