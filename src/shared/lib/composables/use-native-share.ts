@@ -87,7 +87,7 @@ export function useNativeShare(options: UseNativeShareOptions = {}) {
   return { share };
 }
 
-function isCancelError(e: any): boolean {
+export function isCancelError(e: any): boolean {
   if (!e) return false;
   const msg = (e.message || e.errorMessage || '').toLowerCase();
   return (

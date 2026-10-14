@@ -67,6 +67,10 @@ export interface ReplyTo {
   deleted?: boolean;
 }
 
+/** `ForwardingMessage.roomId` of a Bastyon post link shared from a feed
+ *  (initPostForward) — not a real room. */
+export const POST_SHARE_ROOM_ID = "__post_share__";
+
 /** State for a single message being forwarded to another chat */
 export interface ForwardingMessage {
   id: string;
@@ -88,6 +92,11 @@ export interface ForwardingMessage {
    *  derive the right decryption context. Omitted for synthetic
    *  ForwardingMessages (external share, channel post share). */
   sourceTimestamp?: number;
+  /** Source metadata of typed messages — lets "share to other apps" turn a
+   *  poll / transfer / call link into plain text. */
+  pollInfo?: PollInfo;
+  transferInfo?: TransferInfo;
+  callLinkInfo?: CallLinkInfo;
 }
 
 /** Open Graph metadata for URL link previews */

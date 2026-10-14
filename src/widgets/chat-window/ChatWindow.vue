@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useChatStore } from "@/entities/chat";
+import { isForwardableMessage } from "@/entities/chat/lib/forwardable";
 import { useAuthStore } from "@/entities/auth";
 import { useFileDownload, revokeFileUrlsOutsideRoom } from "@/features/messaging/model/use-file-download";
 import { getChatDb, isChatDbReady, useLiveQuery, type CallProvider } from "@/shared/lib/local-db";
@@ -365,8 +366,9 @@ const handleSelectionDelete = () => {
 const handleSelectionForward = () => {
   // Bulk-forward the current multi-select to another chat. Opens ForwardPicker
   // in bulk mode; singular forward (context menu → draft) is unaffected.
+  // Undecrypted, unsent and deleted messages are left out.
   const ids = chatStore.selectedMessageIds;
-  const msgs = chatStore.activeMessages.filter(m => ids.has(m.id));
+  const msgs = chatStore.activeMessages.filter(m => ids.has(m.id) && isForwardableMessage(m));
   if (msgs.length === 0) return;
   chatStore.initBulkForward(msgs);
 };

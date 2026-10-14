@@ -40,3 +40,25 @@ export function computeVideoAspectStyle(
   }
   return { aspectRatio: DEFAULT_ASPECT_RATIO };
 }
+
+/** Tallest a chat video may be, as a share of the viewport height. */
+export const VIDEO_MAX_HEIGHT_VH = 60;
+/** Widest a chat video may be on desktop (md+), in px. */
+export const VIDEO_MAX_WIDTH_DESKTOP_PX = 640;
+
+/**
+ * CSS width of a chat video bubble. It fills its row (the row is 97% of the
+ * chat on mobile) but never so wide that the height — set by the video's
+ * ratio — passes 60vh; on desktop it also stops at 640px. Small videos are
+ * scaled up to that size, unknown sizes count as 16:9.
+ */
+export function computeVideoBubbleWidth(
+  dim: VideoDimensions | null | undefined,
+  isDesktop: boolean,
+): string {
+  const ratio = dim && dim.w > 0 && dim.h > 0 ? dim.w / dim.h : 16 / 9;
+  const byHeight = `calc(${VIDEO_MAX_HEIGHT_VH}vh * ${Number(ratio.toFixed(4))})`;
+  return isDesktop
+    ? `min(100%, ${byHeight}, ${VIDEO_MAX_WIDTH_DESKTOP_PX}px)`
+    : `min(100%, ${byHeight})`;
+}

@@ -444,6 +444,7 @@ export const en = {
 
   // ── Forward ──
   "forward.title": "Forward to...",
+  "forward.shareExternal": "Share to other apps",
   "forward.searchPlaceholder": "Search chats...",
   "forward.noChats": "No chats found",
   "forward.sending": "Sending...",
@@ -473,6 +474,7 @@ export const en = {
   "media.addCaption": "Add a caption...",
   "media.captionBelow": "Caption below",
   "media.captionAbove": "Caption above",
+  "media.share": "Share",
   "media.save": "Save",
   "media.savedToGallery": "Saved to gallery",
   "media.savedToDownloads": "Saved to Downloads",
@@ -923,6 +925,8 @@ export const en = {
   "share.nativeShare": "Share via...",
   "share.sendFailed": "Failed to send file",
   "share.filesCount": "{count} files",
+  "share.dialogTitle": "Share",
+  "share.failed": "Couldn't share",
 
   // ── Share group link ──
   "shareGroup.inviteLink": "Invite Link",

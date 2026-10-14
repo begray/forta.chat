@@ -115,7 +115,10 @@ const onAfterLeave = () => {
 <template>
   <Teleport to="body">
     <transition name="modal" :duration="{ enter: 300, leave: 250 }" @after-leave="onAfterLeave">
-      <div v-if="props.show" class="modal-root fixed inset-0 z-50" @keydown="onKeydown">
+      <!-- contain-strict: the root is exactly the viewport (fixed inset-0), so size
+           containment is safe; it keeps layout/paint inside the modal (video, swipe,
+           comments) from invalidating the page behind it. -->
+      <div v-if="props.show" class="modal-root contain-strict fixed inset-0 z-50" @keydown="onKeydown">
         <div class="modal-backdrop absolute inset-0 bg-background-overlay" :style="backdropStyle" />
 
         <!-- Desktop: the whole viewport scrolls, so the scrollbar sits at the

@@ -446,6 +446,7 @@ export const ru: Record<TranslationKey, string> = {
 
   // ── Forward ──
   "forward.title": "Переслать в...",
+  "forward.shareExternal": "Поделиться в другие приложения",
   "forward.searchPlaceholder": "Поиск чатов...",
   "forward.noChats": "Чаты не найдены",
   "forward.sending": "Отправка...",
@@ -475,6 +476,7 @@ export const ru: Record<TranslationKey, string> = {
   "media.addCaption": "Добавить подпись...",
   "media.captionBelow": "Подпись снизу",
   "media.captionAbove": "Подпись сверху",
+  "media.share": "Поделиться",
   "media.save": "Сохранить",
   "media.savedToGallery": "Сохранено в галерею",
   "media.savedToDownloads": "Сохранено в Загрузки",
@@ -925,6 +927,8 @@ export const ru: Record<TranslationKey, string> = {
   "share.nativeShare": "Поделиться через...",
   "share.sendFailed": "Не удалось отправить файл",
   "share.filesCount": "Файлов: {count}",
+  "share.dialogTitle": "Поделиться",
+  "share.failed": "Не удалось поделиться",
 
   // ── Share group link ──
   "shareGroup.inviteLink": "Ссылка-приглашение",

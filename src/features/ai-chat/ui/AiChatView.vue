@@ -128,9 +128,9 @@ function handleStop(): void {
                      below instead of claiming to still be thinking forever. -->
                 <span class="flex items-center gap-1.5 text-xs italic opacity-70">
                   <span class="inline-flex gap-0.5">
-                    <span class="h-1 w-1 animate-bounce rounded-full bg-current [animation-delay:-0.3s]" />
-                    <span class="h-1 w-1 animate-bounce rounded-full bg-current [animation-delay:-0.15s]" />
-                    <span class="h-1 w-1 animate-bounce rounded-full bg-current" />
+                    <span class="contain-strict h-1 w-1 animate-bounce rounded-full bg-current [animation-delay:-0.3s]" />
+                    <span class="contain-strict h-1 w-1 animate-bounce rounded-full bg-current [animation-delay:-0.15s]" />
+                    <span class="contain-strict h-1 w-1 animate-bounce rounded-full bg-current" />
                   </span>
                   {{ t("ai.thinking") }}
                 </span>
@@ -143,7 +143,7 @@ function handleStop(): void {
                 {{ parsedBubble(message).answer }}
                 <span
                   v-if="message.status === 'streaming'"
-                  class="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-current align-middle"
+                  class="contain-strict ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-current align-middle"
                 />
               </template>
             </div>

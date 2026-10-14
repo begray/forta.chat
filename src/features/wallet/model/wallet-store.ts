@@ -184,13 +184,18 @@ export const useWalletStore = defineStore("wallet", () => {
     }
   }
 
-  // --- Auto-watch: reset + refresh on address change ---
+  // --- Auto-watch: reset on address change, fetch as soon as possible ---
+  // Immediate, because on a cold start the address is already restored from
+  // the session when this store is created; without it the first balance
+  // request waited for a blockchain-ws block event (~1 min). Also fires when
+  // the wallet becomes available later (auth finished, Api script loaded).
   watch(
-    () => authStore.address,
-    (newAddr) => {
-      reset();
-      if (newAddr) refresh();
+    () => [authStore.address, isAvailable.value] as const,
+    ([address, available], prev) => {
+      if (prev && prev[0] !== address) reset();
+      if (address && available && status.value === "idle") refresh();
     },
+    { immediate: true },
   );
 
   return {

@@ -14,6 +14,7 @@ import { useAndroidBackHandler } from "@/shared/lib/composables/use-android-back
 import { useVideoStatePreservation } from "@/shared/lib/composables/use-video-state-preservation";
 import { touchDistance, nextScale, MIN_SCALE } from "../model/pinch-zoom";
 import { useToast } from "@/shared/lib/use-toast";
+import { canShareExternally, useExternalShare } from "../model/use-external-share";
 
 interface Props {
   show: boolean;
@@ -296,6 +297,20 @@ const handleSaveCurrent = async () => {
     saving.value = false;
   }
 };
+
+const { share, isSharing } = useExternalShare();
+
+/** Share the item on screen with other apps — the decrypted file plus its caption. */
+const handleShareCurrent = async () => {
+  const msg = currentMessage.value;
+  const url = currentUrl.value;
+  if (!msg || !msg.fileInfo || !url) return;
+  const caption = msg.fileInfo.caption?.trim();
+  await share({
+    ...(caption ? { text: caption } : {}),
+    files: [{ fileInfo: msg.fileInfo, roomId: msg.roomId, senderId: msg.senderId, timestamp: msg.timestamp, objectUrl: url }],
+  });
+};
 </script>
 
 <template>
@@ -320,20 +335,35 @@ const handleSaveCurrent = async () => {
           <span class="text-sm text-white/60">
             {{ currentIndex + 1 }} / {{ mediaMessages.length }}
           </span>
-          <button
-            data-testid="media-save"
-            class="text-white/80 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!currentUrl || saving"
-            :title="t('media.save')"
-            :aria-label="t('media.save')"
-            @click="handleSaveCurrent"
-          >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-          </button>
+          <div class="flex items-center gap-5">
+            <button
+              v-if="canShareExternally"
+              data-testid="media-share"
+              class="text-white/80 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!currentUrl || isSharing"
+              :title="t('media.share')"
+              :aria-label="t('media.share')"
+              @click="handleShareCurrent"
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><polyline points="16 6 12 2 8 6" /><line x1="12" y1="2" x2="12" y2="15" />
+              </svg>
+            </button>
+            <button
+              data-testid="media-save"
+              class="text-white/80 transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!currentUrl || saving"
+              :title="t('media.save')"
+              :aria-label="t('media.save')"
+              @click="handleSaveCurrent"
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <!-- Media content -->

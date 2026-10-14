@@ -17,7 +17,7 @@ import {
   VIDEO_LOAD_TIMEOUT_MS,
   type VideoPlaybackError,
 } from "../model/video-error";
-import { computeVideoAspectStyle, resolveVideoDimensions } from "../model/video-layout";
+import { computeVideoAspectStyle, computeVideoBubbleWidth, resolveVideoDimensions } from "../model/video-layout";
 import { useBubbleVideoJs } from "../model/use-bubble-video-js";
 import VideoJsFrame from "@/shared/ui/video-js-frame/VideoJsFrame.vue";
 import MessageContent from "./MessageContent.vue";
@@ -35,6 +35,7 @@ import { ref, shallowRef, inject, onMounted, onBeforeUnmount } from "vue";
 import { useLongPress, useSwipeGesture } from "@/shared/lib/gestures";
 import { useThemeStore } from "@/entities/theme";
 import { hexDecode } from "@/shared/lib/matrix/functions";
+import { countEmojiOnly, JUMBO_EMOJI_MAX } from "@/shared/lib/emoji-only";
 import { getUserDisplayNameForUI } from "@/entities/chat";
 
 // Responsive max image width: clamp to ~78% of viewport on small screens
@@ -67,6 +68,21 @@ const isUndecrypted = computed(() =>
     props.message.decryptionStatus === "failed" ||
     props.message.content === "[encrypted]"),
 );
+
+/** Text made only of 1..6 emoji renders large with no bubble background
+ *  (Telegram-style). Replies/forwards keep the bubble for their header. */
+const jumboEmojiCount = computed(() => {
+  const m = props.message;
+  if (m.type !== MessageType.text || m.deleted || m.replyTo || m.forwardedFrom) return 0;
+  const n = countEmojiOnly(m.content);
+  return n <= JUMBO_EMOJI_MAX ? n : 0;
+});
+const jumboEmojiSizeClass = computed(() => {
+  const n = jumboEmojiCount.value;
+  if (n === 1) return "text-[3.5rem] leading-tight";
+  if (n <= 3) return "text-[2.75rem] leading-tight";
+  return "text-[2rem] leading-tight";
+});
 
 /** Tail (pointed corner) only on the last message in a group (= showAvatar) */
 const tailClass = computed(() => {
@@ -276,16 +292,29 @@ const lastPosterSource = ref<string | null>(null);
 // We now lock the container's aspect-ratio to the original media size
 // (upload metadata when available, otherwise the natural size reported by the
 // <video> element after `loadedmetadata`).
-const videoAspectStyle = computed(() =>
-  computeVideoAspectStyle(
-    resolveVideoDimensions(
-      props.message.fileInfo
-        ? { w: props.message.fileInfo.w ?? 0, h: props.message.fileInfo.h ?? 0 }
-        : null,
-      videoNaturalDim.value,
-    ),
+const videoDimensions = computed(() =>
+  resolveVideoDimensions(
+    props.message.fileInfo
+      ? { w: props.message.fileInfo.w ?? 0, h: props.message.fileInfo.h ?? 0 }
+      : null,
+    videoNaturalDim.value,
   ),
 );
+const videoAspectStyle = computed(() => computeVideoAspectStyle(videoDimensions.value));
+// Videos get a bigger bubble than images: up to 97% of the chat on mobile,
+// height at most 60vh, up to 640px wide on desktop (md+).
+const MD_BREAKPOINT_PX = 768;
+// Same conditions as the template's video-bubble branch (deleted and
+// undecrypted messages render their own, narrow bubbles).
+const isVideoMessage = computed(() =>
+  props.message.type === MessageType.video
+  && hasFileInfo.value
+  && !props.message.deleted
+  && !isUndecrypted.value,
+);
+const videoBubbleStyle = computed(() => ({
+  width: computeVideoBubbleWidth(videoDimensions.value, viewportW.value >= MD_BREAKPOINT_PX),
+}));
 // Tracks whether this component instance is still alive: the virtual scroller
 // recycles bubbles aggressively, so an in-flight `extractVideoFrameThumbnail`
 // can resolve after the bubble's scope is gone. Writing to a dead ref would
@@ -916,7 +945,10 @@ const replyPreviewSender = computed(() => {
     <div v-else-if="!chatStore.selectionMode && !props.isOwn && themeStore.showAvatarsInChat" class="w-8 shrink-0" />
 
     <!-- Bubble container -->
-    <div class="relative min-w-0 max-w-[85%] md:max-w-[80%] lg:max-w-[65%] overflow-hidden">
+    <div
+      class="relative min-w-0 overflow-hidden"
+      :class="isVideoMessage ? 'w-[97%] md:w-[80%] lg:w-[65%]' : 'max-w-[85%] md:max-w-[80%] lg:max-w-[65%]'"
+    >
       <!-- Selection tap-target: while selecting, a tap anywhere on the bubble
            toggles selection instead of opening media / replies / downloads.
            Overlaying the whole bubble (vs the tiny checkbox only) is what makes
@@ -1158,8 +1190,8 @@ const replyPreviewSender = computed(() => {
       <div
         v-else-if="message.type === MessageType.video && hasFileInfo"
         class="overflow-hidden rounded-bubble"
-        :class="[tailClass, props.isOwn ? 'bg-chat-bubble-own' : 'bg-chat-bubble-other', (message.replyTo || message.forwardedFrom) ? 'min-w-[180px]' : '']"
-        :style="imageBubbleStyle"
+        :class="[tailClass, props.isOwn ? 'ml-auto bg-chat-bubble-own' : 'bg-chat-bubble-other', (message.replyTo || message.forwardedFrom) ? 'min-w-[180px]' : '']"
+        :style="videoBubbleStyle"
       >
         <!-- Forwarded indicator -->
         <div v-if="message.forwardedFrom" class="truncate px-3 pt-1.5 text-[11px] italic"
@@ -1619,7 +1651,10 @@ const replyPreviewSender = computed(() => {
       <div
         v-else
         class="rounded-bubble px-3 py-1.5"
-        :class="[tailClass, props.isOwn ? 'bg-chat-bubble-own text-text-on-bg-ac-color' : 'bg-chat-bubble-other text-text-color']"
+        :class="jumboEmojiCount
+          ? ['text-text-color', props.isOwn ? 'text-right' : '']
+          : [tailClass, props.isOwn ? 'bg-chat-bubble-own text-text-on-bg-ac-color' : 'bg-chat-bubble-other text-text-color']"
+        :data-jumbo-emoji="jumboEmojiCount || undefined"
       >
         <!-- Sender name in groups -->
         <div
@@ -1657,7 +1692,19 @@ const replyPreviewSender = computed(() => {
         </div>
 
         <!-- Message content with parsed links/mentions -->
-        <div class="text-chat-base">
+        <div v-if="jumboEmojiCount" data-testid="jumbo-emoji">
+          <div class="select-text whitespace-pre-wrap break-words" :class="jumboEmojiSizeClass">{{ props.message.content.trim() }}</div>
+          <div
+            v-if="themeStore.showTimestamps"
+            class="flex items-center gap-0.5 text-[10px] text-text-on-main-bg-color"
+            :class="props.isOwn ? 'justify-end' : ''"
+          >
+            <span v-if="message.edited" class="italic">{{ t('message.edited') }}</span>
+            {{ time }}
+            <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
+          </div>
+        </div>
+        <div v-else class="text-chat-base">
           <MessageContent :text="props.message.content" :is-own="props.isOwn" :link-preview="props.message.linkPreview" @mention-click="(userId) => openUserProfile?.(hexDecode(userId))" />
           <!-- Inline timestamp (Telegram-style float) -->
           <span
@@ -1694,8 +1741,17 @@ const replyPreviewSender = computed(() => {
           </button>
         </div>
 
-        <!-- Reactions row -->
-        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+        <!-- Reactions row. Jumbo emoji have no bubble, so the chips get a small
+             bubble-colored backing to stay readable on the chat background. -->
+        <div
+          v-if="jumboEmojiCount && message.reactions && Object.keys(message.reactions).length"
+          data-testid="jumbo-emoji-reactions"
+          class="mt-1 inline-block rounded-bubble px-1.5 pb-1.5 pt-0.5"
+          :class="props.isOwn ? 'bg-chat-bubble-own' : 'bg-chat-bubble-other'"
+        >
+          <ReactionRow :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+        </div>
+        <ReactionRow v-else-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
       </div>
     </div>
   </div>

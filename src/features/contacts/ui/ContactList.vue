@@ -958,9 +958,9 @@ const onRoomContextMenu = (e: MouseEvent, room: ChatRoom) => {
                 class="truncate text-sm text-color-bg-ac"
               >
                 <span class="inline-flex gap-0.5 align-middle">
-                  <span class="inline-block h-1 w-1 animate-bounce rounded-full bg-color-bg-ac [animation-delay:-0.3s]" />
-                  <span class="inline-block h-1 w-1 animate-bounce rounded-full bg-color-bg-ac [animation-delay:-0.15s]" />
-                  <span class="inline-block h-1 w-1 animate-bounce rounded-full bg-color-bg-ac" />
+                  <span class="contain-strict inline-block h-1 w-1 animate-bounce rounded-full bg-color-bg-ac [animation-delay:-0.3s]" />
+                  <span class="contain-strict inline-block h-1 w-1 animate-bounce rounded-full bg-color-bg-ac [animation-delay:-0.15s]" />
+                  <span class="contain-strict inline-block h-1 w-1 animate-bounce rounded-full bg-color-bg-ac" />
                 </span>
                 {{ getTypingText((item as ChatRoom).id) }}
               </span>
@@ -1015,7 +1015,7 @@ const onRoomContextMenu = (e: MouseEvent, room: ChatRoom) => {
                 {{ getPreview(item as ChatRoom).text }}
               </span>
               <span v-else class="truncate text-sm text-text-on-main-bg-color">
-                <span v-if="(item as ChatRoom).lastMessageReaction" class="mr-0.5">{{ (item as ChatRoom).lastMessageReaction!.emoji }}</span>{{ formatPreview((item as ChatRoom).lastMessage, item as ChatRoom) }}
+                <span v-if="(item as ChatRoom).lastMessageReaction" class="mr-1 inline-flex items-center rounded-full bg-neutral-grad-0 px-1.5 text-xs leading-5" data-testid="preview-reaction-chip">{{ (item as ChatRoom).lastMessageReaction!.emoji }}</span>{{ formatPreview((item as ChatRoom).lastMessage, item as ChatRoom) }}
               </span>
               <!-- No <transition> wrapper: RecycleScroller mounts/unmounts
                    each row's span as it recycles slots, which would replay

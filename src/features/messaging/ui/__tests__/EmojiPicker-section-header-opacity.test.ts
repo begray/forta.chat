@@ -78,4 +78,24 @@ describe("EmojiPicker — sticky section headers are fully opaque", () => {
 
     wrapper.unmount();
   });
+
+  // Regression (2026-10-14): the scroll container had `py-2`; a sticky header
+  // with top-0 sticks at the padding edge, leaving an 8px strip above it
+  // where scrolled emojis showed between the category tabs and the header.
+  it("the scroll container that holds the sticky headers has no top padding", async () => {
+    const wrapper = mount(EmojiPicker, {
+      props: { show: true, mode: "input", x: 0, y: 0 },
+      attachTo: document.body,
+    });
+    await nextTick();
+    await nextTick();
+
+    const header = document.querySelector(".emoji-panel .sticky.top-0");
+    const scroller = header?.parentElement?.parentElement;
+    const cls = scroller?.getAttribute("class") ?? "";
+    expect(cls).toContain("overflow-y-auto");
+    expect(cls).not.toMatch(/(^|\s)(py|pt|p)-\d/);
+
+    wrapper.unmount();
+  });
 });

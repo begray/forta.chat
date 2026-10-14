@@ -284,8 +284,10 @@ useAndroidBackHandler(`emoji-picker-${props.mode}`, 90, () => {
             </button>
           </div>
 
-          <!-- Emoji grid — continuous scroll of all categories -->
-          <div v-if="activeTab === 'emoji'" ref="gridRef" class="min-h-0 flex-1 overflow-y-auto px-2 py-2" @scroll="onGridScroll">
+          <!-- Emoji grid — continuous scroll of all categories. No top padding:
+               sticky section headers stick at the padding edge, so a top
+               padding left a strip where scrolled emojis showed above them. -->
+          <div v-if="activeTab === 'emoji'" ref="gridRef" class="min-h-0 flex-1 overflow-y-auto px-2 pb-2" @scroll="onGridScroll">
             <!-- Search results -->
             <template v-if="search">
               <template v-if="filteredEmojis">

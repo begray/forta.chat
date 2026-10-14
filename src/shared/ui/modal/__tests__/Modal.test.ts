@@ -53,6 +53,10 @@ describe("Modal", () => {
     expect(w.emitted("close")).toBeUndefined();
   });
 
+  it("isolates the viewport-sized root with contain: strict", () => {
+    expect(mountModal().find(".modal-root").classes()).toContain("contain-strict");
+  });
+
   it("pads the content unless bare", () => {
     expect(mountModal().find(".modal-body").classes()).toContain("p-6");
     expect(mountModal({ bare: true }).find(".modal-body").classes()).not.toContain("p-6");
