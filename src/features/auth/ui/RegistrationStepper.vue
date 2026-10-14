@@ -95,7 +95,7 @@ const handleRetry = () => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-white dark:bg-gray-900">
+  <div class="safe-y fixed inset-0 z-50 flex items-center justify-center bg-white dark:bg-gray-900">
     <div class="flex w-full max-w-sm flex-col items-center px-8">
 
       <!-- Step Indicator (3 dots + connecting lines) -->

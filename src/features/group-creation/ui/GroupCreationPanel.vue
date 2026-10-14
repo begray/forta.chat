@@ -142,7 +142,7 @@ const handleAvatarChange = (e: Event) => {
       </div>
 
       <!-- User list: min-h-0 so overflow-y-auto activates inside flex column -->
-      <div class="member-list-scroll min-h-0 flex-1 overflow-y-auto" data-testid="group-member-list">
+      <div class="member-list-scroll safe-bottom min-h-0 flex-1 overflow-y-auto" data-testid="group-member-list">
         <div v-if="isSearching" class="flex items-center justify-center p-8">
           <div class="contain-strict h-6 w-6 animate-spin rounded-full border-2 border-color-bg-ac border-t-transparent" />
         </div>
@@ -208,7 +208,7 @@ const handleAvatarChange = (e: Event) => {
         </button>
       </div>
 
-      <div class="member-list-scroll min-h-0 flex-1 overflow-y-auto">
+      <div class="member-list-scroll safe-bottom min-h-0 flex-1 overflow-y-auto">
         <!-- Avatar + Name section -->
         <div class="flex items-center gap-4 p-4">
           <!-- Avatar picker -->
