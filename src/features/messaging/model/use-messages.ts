@@ -1805,13 +1805,29 @@ export function useMessages() {
     }
   };
 
-  /** Retry a failed media upload. Only works if the blob URL is still valid (same session). */
+  /** Re-mint the preview of an unsent media message from its persisted blob:
+   *  the blob: URL it was created with dies when the WebView is reloaded. */
+  const refreshLocalPreview = async (
+    dbKit: ReturnType<typeof getChatDb>,
+    clientId: string,
+  ): Promise<void> => {
+    try {
+      const localMsg = await dbKit.messages.getByClientId(clientId);
+      if (!localMsg) return;
+      const stale = localMsg.localBlobUrl;
+      const fresh = await dbKit.messages.restoreLocalBlobUrl(localMsg);
+      if (fresh && stale) URL.revokeObjectURL(stale);
+    } catch (e) {
+      console.warn("[retry] Could not restore the local preview:", e);
+    }
+  };
+
+  /** Retry a failed media upload. Uploads from the blob persisted in Dexie,
+   *  so it works after the app was backgrounded and the WebView reloaded. */
   const retryMediaUpload = async (message: Message) => {
     if (message.status !== MessageStatus.failed || !message.fileInfo) return;
 
     const roomId = message.roomId;
-    const matrixService = getMatrixClientService();
-    if (!matrixService.isReady()) return;
     if (!isChatDbReady()) return;
 
     const dbKit = getChatDb();
@@ -1823,22 +1839,44 @@ export function useMessages() {
     const localMsg = await dbKit.messages.getByClientId(mKey);
     if (!localMsg) return;
 
-    // Try to recover the blob from the still-alive blob URL
-    const blobUrl = localMsg.localBlobUrl || localMsg.fileInfo?.url;
-    if (!blobUrl) return;
-
-    let file: File;
-    try {
-      const resp = await fetch(blobUrl);
-      if (!resp.ok) throw new Error("Blob URL expired");
-      const blob = await resp.blob();
-      file = new File([blob], localMsg.fileInfo?.name || "file", {
-        type: localMsg.fileInfo?.type || "application/octet-stream",
-      });
-    } catch {
-      console.error("[retry] Blob URL no longer valid — user must re-send the file");
+    // Normal case: the send_file op is still in the queue (failed after
+    // exhausting its retries). Re-arm it — SyncEngine uploads from the
+    // persisted attachment blob and gates on Matrix readiness itself.
+    if (await dbKit.syncEngine.retryMediaOperation(mKey)) {
+      sendDiag("media:retry-queued", { clientId: mKey });
+      await refreshLocalPreview(dbKit, mKey);
       return;
     }
+
+    const matrixService = getMatrixClientService();
+    if (!matrixService.isReady()) {
+      reportSendError(new SendError("matrixNotReady", "Matrix client not ready", { fileName: localMsg.fileInfo?.name }));
+      return;
+    }
+
+    // No queued op: rebuild the send inline. Prefer the persisted blob; the
+    // blob: URL only survives within the session that created it.
+    let blob: Blob | undefined = localMsg.localId != null
+      ? await dbKit.messages.getLocalAttachmentBlob(localMsg.localId)
+      : undefined;
+    const blobUrl = localMsg.localBlobUrl || localMsg.fileInfo?.url;
+    if (!blob && blobUrl) {
+      try {
+        const resp = await fetch(blobUrl);
+        if (!resp.ok) throw new Error("Blob URL expired");
+        blob = await resp.blob();
+      } catch {
+        blob = undefined;
+      }
+    }
+    if (!blob) {
+      console.error("[retry] Local copy of the file is gone — user must re-send the file");
+      reportSendError(new SendError("uploadFailed", "Local copy of the file is gone", { fileName: localMsg.fileInfo?.name }, false));
+      return;
+    }
+    const file = new File([blob], localMsg.fileInfo?.name || "file", {
+      type: localMsg.fileInfo?.type || "application/octet-stream",
+    });
 
     // Reset status to pending with progress
     await dbKit.db.messages.update(localMsg.localId!, {
