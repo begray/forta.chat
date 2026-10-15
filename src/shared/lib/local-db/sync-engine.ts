@@ -382,6 +382,9 @@ export class SyncEngine {
    *  per-room FIFO holds (small media may overtake, see
    *  MAX_MEDIA_UPLOADS_PER_ROOM). */
   private activeOps = new Map<number, PendingOperation>();
+  /** clientIds the user cancelled. Their op is gone; a worker still running
+   *  for one must end quietly: no retry, no "failed" bubble, no event sent. */
+  private cancelledUploads = new Set<string>();
   /** A kick arrived while the claim loop was running. processTick re-runs the
    *  loop once after it finishes so a room freed mid-loop is not stranded
    *  until the watchdog. */
@@ -927,6 +930,7 @@ export class SyncEngine {
         // handled inside runClaimedOp; the finally here only frees the slot.
         void this.runClaimedOp(op).finally(() => {
           this.activeOps.delete(op.id!);
+          this.cancelledUploads.delete(op.clientId);
           // Re-check the queue: this room is free again, and the op may have
           // scheduled a retry whose wake-up needs (re)computing.
           this.kickScheduler(0);
@@ -1025,6 +1029,7 @@ export class SyncEngine {
     try {
       await this.executeOperation(op);
       if (isUpload) logUpload("state:sent", op.clientId);
+      this.cancelledUploads.delete(op.clientId);
       this.resumeAborted.delete(op.clientId);
       this.stallRestarts.delete(op.clientId);
       // If dispose() was called while the send was in flight, skip writing
@@ -1036,6 +1041,20 @@ export class SyncEngine {
     } catch (e) {
       const restartedOnResume = this.resumeAborted.delete(op.clientId);
       if (this.disposed) return;
+
+      // The user cancelled: their op is already deleted and the bubble is
+      // being removed. Retrying, or marking it failed, would bring it back.
+      if (isUpload && this.cancelledUploads.delete(op.clientId)) {
+        logUpload("op:cancelled", op.clientId, { op: op.id });
+        try {
+          await this.db.pendingOps.delete(op.id!);
+        } catch (deleteErr) {
+          if (this.disposed || isDbClosedError(deleteErr)) return;
+          throw deleteErr;
+        }
+        this.onChange?.(op.roomId);
+        return;
+      }
 
       try {
         // Race guard: Matrix may have accepted the event server-side even
@@ -1382,6 +1401,8 @@ export class SyncEngine {
     // can interrupt the in-flight fetch.
     const controller = new AbortController();
     this.activeUploads.set(op.clientId, controller);
+    // Cancelled between the claim and here: nothing could be aborted yet.
+    if (this.cancelledUploads.has(op.clientId)) controller.abort();
 
     try {
       if (controller.signal.aborted) {
@@ -1987,7 +2008,11 @@ export class SyncEngine {
    * flipping status to "cancelled" / revoking the preview blob URL.
    */
   async cancelMediaUpload(clientId: string): Promise<void> {
-    logUpload("state:cancelled", clientId, { inFlight: this.activeUploads.has(clientId) });
+    const running = [...this.activeOps.values()].some((op) => op.clientId === clientId && op.type === "send_file");
+    logUpload("state:cancelled", clientId, { inFlight: this.activeUploads.has(clientId), running });
+    // A worker still running this upload must end without a retry (see
+    // processClaimedOp). Marked before the abort, which settles it.
+    if (running) this.cancelledUploads.add(clientId);
     this.activeUploads.get(clientId)?.abort();
     this.activeUploads.delete(clientId);
     // Narrow the delete to send_file ops. clientId is not unique across
