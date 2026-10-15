@@ -6,6 +6,7 @@ import { getMatrixClientService } from "@/entities/matrix";
 import { ENCRYPTION_REQUIRED_NO_KEYS, type PcryptoRoomInstance } from "@/entities/matrix/model/matrix-crypto";
 import { buildTransferMessageBody } from "@/shared/lib/bastyon-link";
 import { withTimeout } from "@/shared/lib/with-timeout";
+import { logUpload, logUploadError } from "@/shared/lib/upload-log/upload-log";
 
 type GetRoomCryptoFn = (roomId: string) => Promise<PcryptoRoomInstance | undefined>;
 type OnChangeCallback = (roomId: string) => void;
@@ -371,6 +372,7 @@ export class SyncEngine {
   setOnline(isOnline: boolean): void {
     const wasOffline = !this.online;
     this.online = isOnline;
+    if (wasOffline === isOnline) logUpload(isOnline ? "net:online" : "net:offline");
     if (!isOnline) return;
 
     // Trigger retryAllFailed on BOTH: the offline→online edge, AND the very
@@ -398,7 +400,9 @@ export class SyncEngine {
   /** The app or page went to the background (screen locked, app switched
    *  away, a system picker on top). Arms the next resumeAfterBackground. */
   noteBackground(): void {
-    if (this.backgroundedAt === null) this.backgroundedAt = Date.now();
+    if (this.backgroundedAt !== null) return;
+    this.backgroundedAt = Date.now();
+    logUpload("app:background", null, { uploads: this.uploadWatches.size });
   }
 
   /**
@@ -423,9 +427,14 @@ export class SyncEngine {
     const backgroundedAt = this.backgroundedAt;
     if (this.disposed || backgroundedAt === null) return;
     this.backgroundedAt = null;
+    const now = Date.now();
+    logUpload("app:resume", null, {
+      awayS: (now - backgroundedAt) / 1000,
+      online: this.online,
+      uploads: this.uploadWatches.size,
+    });
     // Offline: setOnline(true) re-arms the failed ops when the network is back.
     if (!this.online) return;
-    const now = Date.now();
     this.lastResumeAt = now;
 
     this.scheduleStallCheck(now);
@@ -455,6 +464,12 @@ export class SyncEngine {
       for (const [clientId, watch] of this.uploadWatches) {
         if (!isUploadStalled(watch, resumedAt) || watch.controller.signal.aborted) continue;
         const used = this.stallRestarts.get(clientId) ?? 0;
+        logUpload("upload:abort", clientId, {
+          reason: "stalled after resume",
+          sent: watch.loaded,
+          total: watch.total,
+          free: used < MAX_FREE_STALL_RESTARTS,
+        });
         if (used < MAX_FREE_STALL_RESTARTS) {
           console.info(`[SyncEngine] resume: restarting stalled upload ${clientId} (${used + 1}/${MAX_FREE_STALL_RESTARTS})`);
           this.stallRestarts.set(clientId, used + 1);
@@ -486,6 +501,7 @@ export class SyncEngine {
     }
     if (reason === null) return;
     console.info(`[SyncEngine] aborting upload ${clientId}: ${reason}`);
+    logUpload("upload:abort", clientId, { reason, sent: watch.loaded, total: watch.total, measured: watch.measured });
     this.uploadAbortReasons.set(clientId, reason);
     watch.controller.abort();
   }
@@ -882,8 +898,11 @@ export class SyncEngine {
       return;
     }
 
+    const isUpload = op.type === "send_file";
+    if (isUpload) logUpload("op:claim", op.clientId, { op: op.id, attempt: op.retries + 1, of: op.maxRetries });
     try {
       await this.executeOperation(op);
+      if (isUpload) logUpload("state:sent", op.clientId);
       this.resumeAborted.delete(op.clientId);
       this.stallRestarts.delete(op.clientId);
       // If dispose() was called while the send was in flight, skip writing
@@ -906,6 +925,7 @@ export class SyncEngine {
         // otherwise the user sees a red retry indicator on a message the
         // peer actually received (WEE-40).
         if (op.clientId && (await this.isMessageAlreadyConfirmed(op.clientId))) {
+          if (isUpload) logUploadError("state:sent", op.clientId, e, { note: "server echo won the race" });
           await this.db.pendingOps.delete(op.id!);
           this.onChange?.(op.roomId);
           return;
@@ -914,6 +934,7 @@ export class SyncEngine {
         // resumeAfterBackground aborted a stalled upload: restart it now and
         // keep the retry budget — the failure was the phone sleeping.
         if (restartedOnResume) {
+          if (isUpload) logUpload("op:restart", op.clientId, { reason: "stalled after resume" });
           await this.db.pendingOps.update(op.id!, {
             status: "pending",
             nextAttemptAt: Date.now(),
@@ -923,6 +944,7 @@ export class SyncEngine {
 
         const retries = op.retries + 1;
         if (retries >= op.maxRetries) {
+          if (isUpload) logUploadError("state:failed", op.clientId, e, { attempts: retries });
           await this.db.pendingOps.update(op.id!, {
             status: "failed",
             retries,
@@ -933,6 +955,7 @@ export class SyncEngine {
           this.onChange?.(op.roomId);
         } else {
           const delay = computeBackoff(retries);
+          if (isUpload) logUploadError("op:retry", op.clientId, e, { attempt: retries, delayS: delay / 1000 });
           await this.db.pendingOps.update(op.id!, {
             status: "pending",
             retries,
@@ -1174,6 +1197,7 @@ export class SyncEngine {
     // --- Acquire blob -------------------------------------------------------
     const attachment = await this.db.attachments.get(payload.attachmentId);
     if (!attachment?.localBlob) {
+      logUpload("blob:missing", op.clientId, { attachmentId: payload.attachmentId, row: !!attachment });
       throw new Error("Attachment blob not found");
     }
 
@@ -1195,6 +1219,8 @@ export class SyncEngine {
       let secrets: Record<string, unknown> | undefined;
 
       if (roomCrypto?.canBeEncrypt()) {
+        const encryptStartedAt = Date.now();
+        logUpload("encrypt:start", op.clientId, { size: attachment.localBlob.size });
         const encrypted = await withTimeout(
           roomCrypto.encryptFile(attachment.localBlob),
           MEDIA_ENCRYPT_TIMEOUT_MS,
@@ -1202,6 +1228,7 @@ export class SyncEngine {
         );
         fileToUpload = encrypted.file;
         secrets = encrypted.secrets;
+        logUpload("encrypt:ok", op.clientId, { ms: Date.now() - encryptStartedAt });
       } else if (roomCrypto?.requiresEncryption()) {
         // Defense in depth: refuse to upload a plaintext attachment into a
         // private room. Same rationale as syncSendMessage.
@@ -1231,8 +1258,20 @@ export class SyncEngine {
         lastProgressAt: startedAt,
         measured: false,
       };
+      let loggedQuarter = 0;
       const onProgress = (p: UploadProgress) => {
         writeProgress(p);
+        // Log 25/50/75/100% once per attempt.
+        const quarter = p.total > 0 ? Math.floor((p.loaded / p.total) * 4) : 0;
+        if (quarter > loggedQuarter) {
+          loggedQuarter = quarter;
+          logUpload("upload:progress", op.clientId, {
+            pct: quarter * 25,
+            sent: p.loaded,
+            s: (Date.now() - startedAt) / 1000,
+            estimated: p.estimated || undefined,
+          });
+        }
         if (p.estimated) return;
         if (!watch.measured || p.loaded !== watch.loaded) watch.lastProgressAt = Date.now();
         watch.measured = true;
@@ -1253,7 +1292,13 @@ export class SyncEngine {
         () => this.checkUploadWatch(op.clientId, watch, deadlineAt),
         this.uploadWatchTickMs,
       );
+      logUpload("upload:start", op.clientId, {
+        size: fileToUpload.size,
+        deadlineS: (deadlineAt - startedAt) / 1000,
+        online: typeof navigator !== "undefined" ? navigator.onLine : undefined,
+      });
       let url: string;
+      let tries = 0;
       try {
         url = await settleUpload(
           uploadWithRetry(() => {
@@ -1261,12 +1306,19 @@ export class SyncEngine {
             watch.loaded = 0;
             watch.measured = false;
             watch.lastProgressAt = Date.now();
-            return matrixService.uploadContent(fileToUpload, onProgress, controller.signal);
+            loggedQuarter = 0;
+            if (++tries > 1) logUpload("upload:try", op.clientId, { n: tries });
+            return matrixService.uploadContent(fileToUpload, onProgress, controller.signal).catch((e: unknown) => {
+              logUploadError("upload:try-fail", op.clientId, e, { n: tries, sent: watch.loaded });
+              throw e;
+            });
           }, controller.signal),
           controller.signal,
           UPLOAD_ABORT_SETTLE_MS,
         );
+        logUpload("upload:ok", op.clientId, { s: (Date.now() - startedAt) / 1000 });
       } catch (e) {
+        logUploadError("upload:fail", op.clientId, e, { s: (Date.now() - startedAt) / 1000, sent: watch.loaded });
         // The engine aborted it (deadline, idle, repeated stall): a normal,
         // counted failure. A user cancel or a free resume restart stays an
         // AbortError.
@@ -1330,11 +1382,14 @@ export class SyncEngine {
         };
       }
 
+      const sendStartedAt = Date.now();
+      logUpload("event:send", op.clientId, { msgtype: payload.msgtype });
       const serverEventId = await withTimeout(
         matrixService.sendEncryptedText(op.roomId, content, op.clientId),
         MEDIA_SEND_EVENT_TIMEOUT_MS,
         "Media send event",
       );
+      logUpload("event:ok", op.clientId, { ms: Date.now() - sendStartedAt });
 
       // Persist the mxc URL on the local message. Without this the bubble
       // keeps a blob: URL that becomes invalid the moment the document is
@@ -1676,6 +1731,7 @@ export class SyncEngine {
       .equals(clientId)
       .filter((o) => o.type === "send_file")
       .first();
+    logUpload("retry:tap", clientId, { op: op?.id, status: op?.status ?? "no op" });
     if (!op) return false;
     this.stallRestarts.delete(clientId);
 
@@ -1713,6 +1769,7 @@ export class SyncEngine {
    * flipping status to "cancelled" / revoking the preview blob URL.
    */
   async cancelMediaUpload(clientId: string): Promise<void> {
+    logUpload("state:cancelled", clientId, { inFlight: this.activeUploads.has(clientId) });
     this.activeUploads.get(clientId)?.abort();
     this.activeUploads.delete(clientId);
     // Narrow the delete to send_file ops. clientId is not unique across

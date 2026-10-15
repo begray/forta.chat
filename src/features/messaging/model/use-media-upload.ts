@@ -1,5 +1,6 @@
 import { ref, computed } from "vue";
 import type { Ref } from "vue";
+import { logUpload, fileLabel } from "@/shared/lib/upload-log/upload-log";
 
 export interface MediaFile {
   file: File;
@@ -19,6 +20,7 @@ export function useMediaUpload() {
   const addFiles = (fileList: FileList | File[]) => {
     for (const file of Array.from(fileList)) {
       const type = file.type.startsWith("video/") ? "video" as const : "image" as const;
+      logUpload("pick", null, { as: type, mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
       files.value.push({
         file,
         previewUrl: URL.createObjectURL(file),

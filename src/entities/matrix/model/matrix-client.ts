@@ -16,6 +16,7 @@ import { MATRIX_SERVER } from "@/shared/config";
 import { createChatStorage, type ChatStorageInstance } from "@/shared/lib/matrix/chat-storage";
 import { getmatrixid } from "@/shared/lib/matrix/functions";
 import { withTimeout } from "@/shared/lib/with-timeout";
+import { logUpload } from "@/shared/lib/upload-log/upload-log";
 
 import { getStoredDeviceId, storeDeviceId } from "./device-id-storage";
 import {
@@ -1197,6 +1198,7 @@ export class MatrixClientService {
     );
 
     if (shouldUseNativeTorUpload(file.size)) {
+      logUpload("upload:transport", null, { via: "tor-native", size: file.size });
       const contentUri = await uploadMediaViaTorFile({
         blob: file,
         mimeType: file.type || "application/octet-stream",
@@ -1210,6 +1212,7 @@ export class MatrixClientService {
     // The SDK uploads through fetch, which reports no upload progress: a
     // caller that shows progress gets the same POST over XMLHttpRequest.
     if (progressHandler && typeof XMLHttpRequest !== "undefined") {
+      logUpload("upload:transport", null, { via: "xhr", size: file.size });
       const [{ uploadBlobWithProgress }, { routeUploadUrl }] = await Promise.all([
         import("@/shared/lib/file-transfer/xhr-upload"),
         import("@/shared/lib/transport/direct-upload"),
@@ -1227,6 +1230,7 @@ export class MatrixClientService {
       return this.client.mxcUrlToHttp(contentUri) ?? contentUri;
     }
 
+    logUpload("upload:transport", null, { via: "sdk-fetch", size: file.size });
     const opts: Record<string, unknown> = {};
     if (signal) {
       opts.abortSignal = signal;
