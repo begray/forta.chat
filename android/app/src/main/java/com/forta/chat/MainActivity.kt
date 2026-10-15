@@ -30,6 +30,7 @@ import com.forta.chat.plugins.locale.LocalePlugin
 import com.forta.chat.plugins.savemedia.SaveMediaPlugin
 import com.forta.chat.plugins.download.ModelDownloadPlugin
 import com.forta.chat.plugins.aiinference.AiInferencePlugin
+import com.forta.chat.plugins.videocompress.VideoCompressPlugin
 import com.forta.chat.updater.AppUpdater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -193,6 +194,7 @@ class MainActivity : BridgeActivity() {
         registerPlugin(SaveMediaPlugin::class.java)
         registerPlugin(ModelDownloadPlugin::class.java)
         registerPlugin(AiInferencePlugin::class.java)
+        registerPlugin(VideoCompressPlugin::class.java)
         // Must precede super.onCreate: that is where the Bridge — and with it
         // the WebViewClient that consults these listeners — is built.
         bridgeBuilder.addWebViewListener(renderProcessRecovery)

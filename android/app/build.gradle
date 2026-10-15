@@ -98,6 +98,12 @@ dependencies {
     // Native WebRTC — hardware-accelerated video/audio for calls
     implementation 'io.github.webrtc-sdk:android:144.7559.01'
 
+    // Video compression before upload (VideoCompressPlugin): hardware
+    // H.264/AAC re-encode so phone videos fit the server's upload limit.
+    implementation "androidx.media3:media3-transformer:$media3Version"
+    implementation "androidx.media3:media3-effect:$media3Version"
+    implementation "androidx.media3:media3-common:$media3Version"
+
     // Firebase Cloud Messaging — for native push handling when app is killed
     implementation 'com.google.firebase:firebase-messaging:25.0.1'
 
