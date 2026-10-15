@@ -16,6 +16,8 @@ import AttachmentPanel from "./AttachmentPanel.vue";
 import MediaPreview from "./MediaPreview.vue";
 import PollCreator from "./PollCreator.vue";
 import SendErrorBanner from "./SendErrorBanner.vue";
+import VideoCompressBanner from "./VideoCompressBanner.vue";
+import { willCompressVideo } from "../model/video-compression";
 import { useVoiceRecorder } from "../model/use-voice-recorder";
 import { useVideoCircleRecorder } from "../model/use-video-circle-recorder";
 import { useMentionAutocomplete } from "../model/use-mention-autocomplete";
@@ -462,22 +464,27 @@ const handleFileSelect = async (e: Event) => {
 const handleMediaSend = async () => {
   if (mediaUpload.files.value.length === 0) return;
   mediaUpload.sending.value = true;
+  const files = [...mediaUpload.files.value];
+  const caption = mediaUpload.caption.value;
+  const captionAbove = mediaUpload.captionAbove.value;
+  // Compressing a video takes a while: close the preview now and show the
+  // progress in the composer (VideoCompressBanner) instead of a frozen
+  // preview. Then the user may pick new media, which must survive.
+  const closedEarly = files.some((f) => f.type === "video" && willCompressVideo(f.file));
+  if (closedEarly) mediaUpload.clear();
   try {
-    const files = mediaUpload.files.value;
     // Caption travels on the LAST file so the chat reads as a single
     // gallery; precompute the index here and dispatch the rest in parallel.
     const lastIdx = files.length - 1;
     await sendBatch(
       files,
       (f, i) => {
-        const captionOpts = i === lastIdx && mediaUpload.caption.value
-          ? { caption: mediaUpload.caption.value, captionAbove: mediaUpload.captionAbove.value }
-          : {};
+        const captionOpts = i === lastIdx && caption ? { caption, captionAbove } : {};
         return f.type === "image" ? sendImage(f.file, captionOpts) : sendFile(f.file);
       },
       (f) => f.file.name,
     );
-  } finally { mediaUpload.clear(); }
+  } finally { if (!closedEarly) mediaUpload.clear(); }
 };
 
 const cancelReply = () => { chatStore.replyingTo = null; };
@@ -929,6 +936,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
          sendFile/sendImage/sendAudio + voice recorder are routed here via
          the send-error bus so they stop disappearing silently. -->
     <SendErrorBanner />
+    <VideoCompressBanner />
     <!-- Editing bar -->
     <div class="input-bar-grid" :class="{ 'input-bar-grid--open': isEditing }">
       <div class="input-bar-grid-inner">

@@ -460,6 +460,10 @@ export const en = {
   "pinned.unpin": "Unpin",
 
   // ── Media preview ──
+  "media.compress.queued": "Waiting to compress the video…",
+  "media.compress.preparing": "Preparing the video…",
+  "media.compress.progress": "Compressing video… {percent}%",
+  "media.compress.cancel": "Cancel compression",
   "media.addCaption": "Add a caption...",
   "media.captionBelow": "Caption below",
   "media.captionAbove": "Caption above",
@@ -1163,6 +1167,8 @@ export const en = {
   "errors.send.fileTooLarge": "File too large for the server.",
   "errors.send.fileTooLargeSized": "File is {size} MB; the limit is {limit} MB. It was not sent.",
   "errors.send.videoTooLargeSized": "Video is {size} MB; the limit is {limit} MB. It was not sent.",
+  "errors.send.videoTooLong": "The video is too long to send.",
+  "errors.send.videoTooLongSized": "The video is too long to send: up to about {minutes} min fits. It was not sent.",
   "errors.send.fileUnreadable": "Could not read the file, so it was not sent. If it is in the cloud (e.g. Google Photos), save it to the phone and pick it again.",
   "errors.send.dbNotReady": "Local database is not ready yet. Wait and try again.",
   "errors.send.matrixNotReady": "Connection is not ready yet. Wait and try again.",

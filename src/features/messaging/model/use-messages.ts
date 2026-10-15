@@ -27,6 +27,7 @@ import { optimizeChatImage } from "@/shared/lib/upload-image";
 import { logUpload, logUploadError, fileLabel } from "@/shared/lib/upload-log/upload-log";
 import { APP_MAX_UPLOAD_BYTES } from "@/shared/lib/file-transfer/upload-limit";
 import { checkUploadSize, tooLargeError } from "./upload-size";
+import { prepareVideoForSend } from "./video-compression";
 
 /** Per-phase media pipeline timeouts. Splitting the old single 5-minute cap
  *  lets us surface phase-specific failures (e.g. crypto hang vs upload stall)
@@ -451,11 +452,24 @@ export function useMessages() {
     const clientId = crypto.randomUUID();
     logUpload("send:start", clientId, { kind: "file", mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
 
+    // Big phone videos are compressed first (Android), so they fit the
+    // server limit; the original never reaches the queue. Forwards were
+    // already sent once and go as they are.
+    const prepared = options.forwardedFrom ? null : await prepareVideoForSend(file, clientId);
+    if (prepared === null && !options.forwardedFrom) return false;
+    if (prepared) file = prepared.file;
+    const cleanupPrepared = async () => { await prepared?.cleanup(); };
+
     // The server's limit (~50 MB on pocketnet), not just the app's 100 MB:
     // a bigger file uploads in full and is then dropped, on every retry.
-    if (!(await checkUploadSize(file, clientId, "file"))) return false;
+    if (!(await checkUploadSize(file, clientId, "file"))) {
+      await cleanupPrepared();
+      return false;
+    }
 
+    // readForSend copies the bytes into memory, so the temp files can go.
     const readFile = await readForSend(file, clientId, "file");
+    await cleanupPrepared();
     if (!readFile) return false;
 
     // Android WebView cannot render HEIC; convertHeicToJpeg short-circuits

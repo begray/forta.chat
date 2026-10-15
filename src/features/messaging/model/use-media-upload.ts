@@ -2,6 +2,7 @@ import { ref, computed } from "vue";
 import type { Ref } from "vue";
 import { logUpload, fileLabel } from "@/shared/lib/upload-log/upload-log";
 import { rejectOversizedPick } from "./upload-size";
+import { canCompressVideos } from "./video-compression";
 
 export interface MediaFile {
   file: File;
@@ -22,8 +23,9 @@ export function useMediaUpload() {
     for (const file of Array.from(fileList)) {
       const type = file.type.startsWith("video/") ? "video" as const : "image" as const;
       logUpload("pick", null, { as: type, mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
-      // A video over the server limit never gets into the composer.
-      if (rejectOversizedPick(file)) continue;
+      // A video over the server limit never gets into the composer, unless
+      // it can be compressed to fit when it is sent.
+      if (!(type === "video" && canCompressVideos()) && rejectOversizedPick(file)) continue;
       files.value.push({
         file,
         previewUrl: URL.createObjectURL(file),

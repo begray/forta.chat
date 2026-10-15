@@ -24,6 +24,9 @@ const label = computed(() => {
     const params = { size: formatFileMegabytes(ctx.sizeBytes), limit: formatLimitMegabytes(ctx.limitBytes) };
     return ctx.kind === "video" ? t("errors.send.videoTooLargeSized", params) : t("errors.send.fileTooLargeSized", params);
   }
+  if (error.value?.kind === "videoTooLong" && ctx?.maxDurationMs) {
+    return t("errors.send.videoTooLongSized", { minutes: String(Math.floor(ctx.maxDurationMs / 60_000)) });
+  }
   return t(labelKey.value);
 });
 const retryable = computed(() => !!error.value?.retry && error.value.retryable);

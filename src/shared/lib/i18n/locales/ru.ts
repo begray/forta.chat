@@ -462,6 +462,10 @@ export const ru: Record<TranslationKey, string> = {
   "pinned.unpin": "Открепить",
 
   // ── Media preview ──
+  "media.compress.queued": "Видео ждёт сжатия…",
+  "media.compress.preparing": "Подготовка видео…",
+  "media.compress.progress": "Сжатие видео… {percent}%",
+  "media.compress.cancel": "Отменить сжатие",
   "media.addCaption": "Добавить подпись...",
   "media.captionBelow": "Подпись снизу",
   "media.captionAbove": "Подпись сверху",
@@ -1165,6 +1169,8 @@ export const ru: Record<TranslationKey, string> = {
   "errors.send.fileTooLarge": "Файл слишком большой для сервера.",
   "errors.send.fileTooLargeSized": "Файл весит {size} МБ, а лимит {limit} МБ. Он не отправлен.",
   "errors.send.videoTooLargeSized": "Видео весит {size} МБ, а лимит {limit} МБ. Оно не отправлено.",
+  "errors.send.videoTooLong": "Видео слишком длинное для отправки.",
+  "errors.send.videoTooLongSized": "Видео слишком длинное: помещается примерно до {minutes} мин. Оно не отправлено.",
   "errors.send.fileUnreadable": "Не удалось прочитать файл, он не отправлен. Если он в облаке (например, Google Фото), сохраните его на телефон и выберите снова.",
   "errors.send.dbNotReady": "Локальная база ещё не готова. Подождите и попробуйте снова.",
   "errors.send.matrixNotReady": "Соединение ещё не установлено. Подождите и попробуйте снова.",

@@ -5,6 +5,7 @@ export type SendErrorKind =
   | "micDenied"
   | "pickerCancelled"
   | "fileTooLarge"
+  | "videoTooLong"
   | "fileUnreadable"
   | "dbNotReady"
   | "matrixNotReady"
@@ -20,6 +21,8 @@ export interface SendErrorContext {
   /** fileTooLarge: the file's size and the upload limit, in bytes. */
   sizeBytes?: number;
   limitBytes?: number;
+  /** videoTooLong: the longest video that still fits once compressed. */
+  maxDurationMs?: number;
 }
 
 export class SendError extends Error {
