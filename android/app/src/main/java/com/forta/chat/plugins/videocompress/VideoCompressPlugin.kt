@@ -61,6 +61,9 @@ class VideoCompressPlugin : Plugin() {
     private val main = Handler(Looper.getMainLooper())
     /** Touched on the main thread only. */
     private val jobs = HashMap<String, Job>()
+    /** Ids cancelled before their job started (still probing): start()
+     *  rejects them instead of encoding a video nobody wants. */
+    private val cancelledEarly = HashSet<String>()
 
     private data class Probe(
         val durationMs: Long,
@@ -159,6 +162,7 @@ class VideoCompressPlugin : Plugin() {
         audioBitrate: Int,
         output: File,
     ) {
+        if (cancelledEarly.remove(id)) return call.reject("Compression cancelled", "CANCELLED")
         if (jobs.containsKey(id)) return call.reject("Job $id is already running", "BUSY")
         try {
             val encoderFactory = DefaultEncoderFactory.Builder(context)
@@ -188,7 +192,8 @@ class VideoCompressPlugin : Plugin() {
                 .setEncoderFactory(encoderFactory)
                 .addListener(object : Transformer.Listener {
                     override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                        finish(id) { job -> resolveDone(job, exportResult) }
+                        // Reading the output's metadata is disk work: off the main thread.
+                        finish(id) { job -> Thread { resolveDone(job, exportResult) }.start() }
                     }
 
                     override fun onError(
@@ -259,6 +264,9 @@ class VideoCompressPlugin : Plugin() {
                 try { job.transformer.cancel() } catch (e: Exception) { Log.w(TAG, "cancel $id", e) }
                 job.output.delete()
                 job.call.reject("Compression cancelled", "CANCELLED")
+            } else {
+                // Possibly still probing on the worker thread; start() checks this.
+                cancelledEarly.add(id)
             }
             call.resolve(JSObject().apply { put("cancelled", job != null) })
         }
@@ -272,6 +280,7 @@ class VideoCompressPlugin : Plugin() {
                 job.call.reject("Compression cancelled", "CANCELLED")
             }
             jobs.clear()
+            cancelledEarly.clear()
         }
         super.handleOnDestroy()
     }
