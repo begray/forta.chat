@@ -16,7 +16,7 @@ import { Toggle } from "@/shared/ui/toggle";
 import Modal from "@/shared/ui/modal/Modal.vue";
 import EmojiPicker from "@/features/messaging/ui/EmojiPicker.vue";
 import { UserEditForm, CallProvidersSection } from "@/features/user-management";
-import { StorageSettings, NotificationSettings, TorSettingsSection, DesktopSettingsSection, LocalAiSettingsSection } from "@/features/settings";
+import { StorageSettings, NotificationSettings, TorSettingsSection, DesktopSettingsSection, LocalAiSettingsSection, UploadLogSection } from "@/features/settings";
 import { useLiveQuery, isChatDbReady, getChatDb } from "@/shared/lib/local-db";
 import type { TelemetrySnapshot } from "@/shared/lib/telemetry";
 import { isNative, isAndroid } from "@/shared/lib/platform";
@@ -635,6 +635,8 @@ const title = computed(() => {
             </div>
           </div>
         </template>
+
+        <UploadLogSection class="mt-6" :app-version="appVersion" />
       </div>
     </div>
   </div>
