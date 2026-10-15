@@ -362,6 +362,7 @@ export const en = {
   "message.encryptedPreview": "🔒 Encrypted message",
   "message.retry": "Retry",
   "message.fileLost": "File is gone. Pick it again",
+  "message.tooLarge": "Too large for the server (limit {limit} MB)",
   "message.failedToLoadImage": "Failed to load image",
   "message.tapToRetry": "Tap to retry",
   "message.cancelSend": "Cancel",

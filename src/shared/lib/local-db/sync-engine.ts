@@ -7,6 +7,7 @@ import { ENCRYPTION_REQUIRED_NO_KEYS, type PcryptoRoomInstance } from "@/entitie
 import { buildTransferMessageBody } from "@/shared/lib/bastyon-link";
 import { withTimeout } from "@/shared/lib/with-timeout";
 import { logUpload, logUploadError } from "@/shared/lib/upload-log/upload-log";
+import { TOO_LARGE_SUSPECT_BYTES, noteUploadTooLarge } from "@/shared/lib/file-transfer/upload-limit";
 
 type GetRoomCryptoFn = (roomId: string) => Promise<PcryptoRoomInstance | undefined>;
 type OnChangeCallback = (roomId: string) => void;
@@ -125,6 +126,32 @@ class AttachmentMissingError extends Error {
   }
 }
 
+/** The server refused the file's size: a 413, or the connection dying right
+ *  after the last byte of a big file (pocketnet's nginx answers a body over
+ *  ~50 MiB with a 502 without CORS headers, which the WebView reports as a
+ *  bare "network error"). Retrying re-sends the whole file for nothing, so
+ *  the op fails at once and the bubble says the file is too large. The
+ *  message keeps "too large", which isUploadFatal matches. */
+export class UploadTooLargeError extends Error {
+  constructor(readonly bytes: number, cause: string) {
+    super(`Upload too large for the server (${bytes} bytes): ${cause}`);
+    this.name = "UploadTooLargeError";
+  }
+}
+
+/** Does this failed try mean the server refused the size? `sent`/`total` are
+ *  the bytes the transport reported for the try. */
+export function classifyTooLarge(err: unknown, sent: number, total: number, bytes: number): UploadTooLargeError | null {
+  if (!(err instanceof Error) || isAbortError(err)) return null;
+  const msg = err.message;
+  if (/status\s*413\b/.test(msg)) return new UploadTooLargeError(bytes, msg);
+  const fullySent = total > 0 && sent >= total;
+  if (!fullySent) return null;
+  if (/status\s*502\b/.test(msg)) return new UploadTooLargeError(bytes, msg);
+  if (bytes >= TOO_LARGE_SUSPECT_BYTES && /network error/i.test(msg)) return new UploadTooLargeError(bytes, msg);
+  return null;
+}
+
 /** Upload progress as transports report it. `estimated` marks a figure that
  *  follows the clock, not the bytes (native Tor upload): it shows in the UI
  *  but says nothing about whether the socket is alive. */
@@ -224,6 +251,7 @@ const UPLOAD_RETRY_DELAYS_MS = [500, 1500, 4000] as const;
  *  retry-immune — retrying just delays the failure UX. */
 function isUploadFatal(err: unknown): boolean {
   if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof UploadTooLargeError) return true;
   if (err instanceof Error) {
     // Matrix media repo returns 413 (payload too large) and 4xx auth/quota
     // failures that are not retryable. We don't have typed errors at this
@@ -286,6 +314,11 @@ async function uploadWithRetry(
     }
   }
   throw lastErr;
+}
+
+/** A send_file op that failed because the server refused the file's size. */
+function isTooLargeOp(op: PendingOperation): boolean {
+  return op.type === "send_file" && (op.errorMessage ?? "").includes("UploadTooLargeError");
 }
 
 function newPendingOp(
@@ -424,7 +457,9 @@ export class SyncEngine {
       // reset a "syncing" op that's mid-execution). Callers own that ordering:
       // run it before processQueue(), or pass the snapshotStrandedOpIds()
       // whitelist when deferring it past queue start (WEE-97).
-      this.retryAllFailed().catch((e) => {
+      // Not a file the server refused for its size: reconnecting does not
+      // make it smaller, and it would be uploaded in full again.
+      this.retryAllFailed((op) => !isTooLargeOp(op)).catch((e) => {
         console.warn("[SyncEngine] retryAllFailed on reconnect failed:", e);
         this.processQueue();
       });
@@ -1003,6 +1038,27 @@ export class SyncEngine {
           return;
         }
 
+        // The server refuses the file's size: every retry would upload the
+        // whole file again. Fail now; resume / reconnect do not re-arm it
+        // (isUploadFatal), and the bubble says why.
+        if (e instanceof UploadTooLargeError) {
+          logUpload("state:too-large", op.clientId, { size: e.bytes });
+          noteUploadTooLarge(e.bytes);
+          await this.db.pendingOps.update(op.id!, {
+            status: "failed",
+            retries: op.maxRetries,
+            errorMessage: String(e),
+            lastAttemptAt: Date.now(),
+          });
+          await this.markMessageFailed(op);
+          await this.db.messages
+            .where("clientId")
+            .equals(op.clientId)
+            .modify({ uploadError: "too_large", uploadProgress: undefined });
+          this.onChange?.(op.roomId);
+          return;
+        }
+
         if (restartedOnResume) {
           if (isUpload) logUpload("op:restart", op.clientId, { reason: "stalled after resume" });
           await this.db.pendingOps.update(op.id!, {
@@ -1380,6 +1436,8 @@ export class SyncEngine {
             if (++tries > 1) logUpload("upload:try", op.clientId, { n: tries });
             return matrixService.uploadContent(fileToUpload, onProgress, controller.signal).catch((e: unknown) => {
               logUploadError("upload:try-fail", op.clientId, e, { n: tries, sent: watch.loaded });
+              const tooLarge = classifyTooLarge(e, watch.loaded, watch.total, fileToUpload.size);
+              if (tooLarge) throw tooLarge;
               throw e;
             });
           }, controller.signal),
@@ -1848,6 +1906,7 @@ export class SyncEngine {
     }
     const msg = await this.messageRepo.getByClientId(clientId);
     if (msg && !msg.eventId && msg.status !== "synced") {
+      if (msg.uploadError) await this.db.messages.where("clientId").equals(clientId).modify({ uploadError: undefined });
       await this.messageRepo.updateStatus({ clientId }, "pending");
       await this.messageRepo.updateUploadProgress(clientId, 0);
       await this.roomRepo.syncLastMessageLocalStatus(op.roomId, msg.timestamp, "pending");
