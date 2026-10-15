@@ -1942,6 +1942,8 @@ export function useMessages() {
     }
     if (!blob) {
       console.error("[retry] Local copy of the file is gone — user must re-send the file");
+      logUpload("retry:file-lost", localMsg.clientId);
+      await dbKit.db.messages.update(localMsg.localId!, { uploadError: "file_lost" });
       reportSendError(new SendError("uploadFailed", "Local copy of the file is gone", { fileName: localMsg.fileInfo?.name }, false));
       return;
     }
@@ -1949,10 +1951,14 @@ export function useMessages() {
       type: localMsg.fileInfo?.type || "application/octet-stream",
     });
 
-    // Reset status to pending with progress
+    // Reset status to pending with progress. uploadPhase is set in the same
+    // write: it tells the watchdog's orphan sweep that this op-less upload
+    // is running inline.
+    logUpload("retry:inline", localMsg.clientId, { size: blob.size });
     await dbKit.db.messages.update(localMsg.localId!, {
       status: "pending" as import("@/shared/lib/local-db/schema").LocalMessageStatus,
       uploadProgress: 0,
+      uploadPhase: "encrypting",
     });
     // WEE-64: mirror the reset onto the chat-list preview (still-last guard
     // inside the repository) so the sidebar shows "отправляется" during retry.

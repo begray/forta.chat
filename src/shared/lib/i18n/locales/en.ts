@@ -361,6 +361,7 @@ export const en = {
   "message.retryDecrypt": "Try to decrypt",
   "message.encryptedPreview": "🔒 Encrypted message",
   "message.retry": "Retry",
+  "message.fileLost": "File is gone. Pick it again",
   "message.failedToLoadImage": "Failed to load image",
   "message.tapToRetry": "Tap to retry",
   "message.cancelSend": "Cancel",

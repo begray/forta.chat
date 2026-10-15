@@ -363,6 +363,7 @@ export const ru: Record<TranslationKey, string> = {
   "message.retryDecrypt": "Расшифровать",
   "message.encryptedPreview": "🔒 Зашифрованное сообщение",
   "message.retry": "Повторить",
+  "message.fileLost": "Файл недоступен. Выберите его снова",
   "message.failedToLoadImage": "Не удалось загрузить",
   "message.tapToRetry": "Нажмите для повтора",
   "message.cancelSend": "Отменить",

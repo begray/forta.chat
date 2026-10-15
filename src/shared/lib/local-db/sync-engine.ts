@@ -111,6 +111,20 @@ const UPLOAD_STALL_ON_RESUME_MS = 15_000;
  *  next attempt waits for it this long instead of racing it for the uplink. */
 const UPLOAD_ABORT_SETTLE_MS = 30_000;
 
+/** A media bubble still "sending" this long after it was created, with no
+ *  send_file op queued for it, is an orphan: the watchdog marks it failed
+ *  (Retry + Delete, or "pick the file again" when its copy is gone). */
+const ORPHAN_MEDIA_GRACE_MS = 60_000;
+
+/** The persisted file of a send_file op is gone. Retrying cannot help, so
+ *  the op is dropped and the bubble asks the user to pick the file again. */
+class AttachmentMissingError extends Error {
+  constructor() {
+    super("Attachment blob not found");
+    this.name = "AttachmentMissingError";
+  }
+}
+
 /** Upload progress as transports report it. `estimated` marks a figure that
  *  follows the clock, not the bytes (native Tor upload): it shows in the UI
  *  but says nothing about whether the socket is alive. */
@@ -698,6 +712,7 @@ export class SyncEngine {
     if (this.disposed) return;
     try {
       await this.releaseExpiredClaims();
+      await this.failOrphanedMedia();
 
       const pending = await this.db.pendingOps
         .where("status")
@@ -721,6 +736,29 @@ export class SyncEngine {
     } catch (e) {
       if (this.disposed || isDbClosedError(e)) return;
       console.warn("[SyncEngine] watchdog tick failed:", e);
+    }
+  }
+
+  /** In-session sweep for media bubbles stuck in "sending" with no op behind
+   *  them (see MessageRepository.failOrphanedMedia). Before this ran only at
+   *  startup, so such a bubble spun until the app was restarted. */
+  private async failOrphanedMedia(): Promise<void> {
+    if (this.disposed) return;
+    let failed: LocalMessage[];
+    try {
+      failed = await this.messageRepo.failOrphanedMedia(ORPHAN_MEDIA_GRACE_MS, { skipInlineRetries: true });
+    } catch (e) {
+      // Never let the sweep stop the rest of the watchdog tick.
+      if (!this.disposed && !isDbClosedError(e)) console.warn("[SyncEngine] orphan media sweep failed:", e);
+      return;
+    }
+    for (const m of failed) {
+      logUpload("state:failed", m.clientId, {
+        reason: "no upload op behind the bubble",
+        fileLost: m.uploadError === "file_lost",
+        ageS: (Date.now() - m.timestamp) / 1000,
+      });
+      this.onChange?.(m.roomId);
     }
   }
 
@@ -953,6 +991,18 @@ export class SyncEngine {
 
         // resumeAfterBackground aborted a stalled upload: restart it now and
         // keep the retry budget — the failure was the phone sleeping.
+        if (e instanceof AttachmentMissingError) {
+          logUpload("state:file-lost", op.clientId);
+          await this.db.pendingOps.delete(op.id!);
+          await this.markMessageFailed(op);
+          await this.db.messages
+            .where("clientId")
+            .equals(op.clientId)
+            .modify({ uploadError: "file_lost", uploadProgress: undefined });
+          this.onChange?.(op.roomId);
+          return;
+        }
+
         if (restartedOnResume) {
           if (isUpload) logUpload("op:restart", op.clientId, { reason: "stalled after resume" });
           await this.db.pendingOps.update(op.id!, {
@@ -1218,7 +1268,7 @@ export class SyncEngine {
     const attachment = await this.db.attachments.get(payload.attachmentId);
     if (!attachment?.localBlob) {
       logUpload("blob:missing", op.clientId, { attachmentId: payload.attachmentId, row: !!attachment });
-      throw new Error("Attachment blob not found");
+      throw new AttachmentMissingError();
     }
 
     // Register an AbortController for this upload so cancelMediaUpload(clientId)
