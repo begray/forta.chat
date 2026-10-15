@@ -79,3 +79,37 @@ export function onForeground(listener: () => void): () => void {
     }
   };
 }
+
+/** Fires when the page turns hidden and, on native, when the app stops being active — the
+ *  counterpart of onForeground. A system picker or permission dialog on top counts too. */
+export function onBackground(listener: () => void): () => void {
+  let removed = false;
+  const onVisibility = (): void => {
+    if (!removed && document.visibilityState === "hidden") listener();
+  };
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
+
+  let handle: { remove: () => Promise<void> } | null = null;
+  if (isNative) {
+    import("@capacitor/app")
+      .then(({ App }) =>
+        App.addListener("appStateChange", ({ isActive }) => {
+          if (!removed && !isActive) listener();
+        }),
+      )
+      .then((h) => {
+        if (removed) void h.remove().catch(() => { /* ignore */ });
+        else handle = h;
+      })
+      .catch((e) => console.warn("[auth] appStateChange unavailable for the background signal:", e));
+  }
+
+  return () => {
+    removed = true;
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
+    if (handle) {
+      void handle.remove().catch(() => { /* ignore */ });
+      handle = null;
+    }
+  };
+}

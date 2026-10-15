@@ -24,7 +24,7 @@ function sliceBetween(from: string, to: string, start = 0): string {
 
 describe("auth store: Matrix start retried after a failure", () => {
   it("imports the reconnect helper", () => {
-    expect(source).toMatch(/import \{ armMatrixReconnect, onForeground \} from "\.\.\/lib\/matrix-reconnect";/);
+    expect(source).toMatch(/import \{ armMatrixReconnect, onBackground, onForeground \} from "\.\.\/lib\/matrix-reconnect";/);
   });
 
   it("retries only while signed in, not ready and no start is in flight", () => {

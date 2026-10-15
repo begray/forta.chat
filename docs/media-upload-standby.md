@@ -74,3 +74,61 @@ recovered on start). The breakage is around it.
 Tests: `local-db/__tests__/sync-engine-background-resume.test.ts`,
 `local-db/__tests__/recover-stuck-media.test.ts` (schema now mirrors
 production), `messaging/model/__tests__/retry-media-upload.test.ts`.
+
+## Follow-up: video upload looping (standbyfix2, 2026-10-15)
+
+Report: on the standbyfix2 test build a ~30 s video re-uploaded "forever". The
+user stayed in the app; the only background/foreground transition was the
+system gallery picker.
+
+Causes:
+
+1. **The upload deadline did not cancel the upload** (also on master).
+   `withTimeout(uploadContent(...), 4 min)` only rejects; the XHR (or the native
+   Tor upload) keeps running. The counted retry then uploaded the same video
+   next to it, both shared the uplink, the retry timed out too, and the stale
+   XHR kept writing its own percentage into the same bubble. A big video on a
+   slow uplink went through 5 counted attempts (~20+ min of a ring that fills
+   and drops back) before ending as failed. The fixed 4 minutes is also too
+   short for a big video on a slow uplink: every attempt failed the same way.
+2. **The resume restart was unbounded** (this branch, b3b4f42b). Any foreground
+   signal armed a stall check that aborted every upload with "no activity"
+   since the resume and restarted it without counting a retry, so:
+   - an upload whose transport reports no progress (fetch, an XHR the service
+     worker answers) or that already sent every byte and waits for the server
+     counted as stalled;
+   - the debounce was time-based, so a late second signal, a picker or a
+     permission dialog armed another check;
+   - nothing bounded the free restarts;
+   - every resume re-armed every failed upload with a fresh retry budget, so a
+     video that kept failing started over on each app switch.
+3. Tor progress is a time-based estimate that stops at its ceiling; it says
+   nothing about the socket.
+
+A loop without any resume event exists through cause 1 (master has it as
+well): bounded by the 5 counted retries, but each one re-uploads the whole
+video next to the previous attempt. `setOnline` re-arms failed ops with a fresh
+budget on every offline→online edge, so a flaky connection starts it again.
+
+Fix (`sync-engine.ts`):
+
+- Resume counts only after a background signal (`noteBackground`, wired to the
+  new `onBackground` in `matrix-reconnect.ts`: page hidden / app not active);
+  the second signal of one return finds nothing armed.
+- The stall check aborts only uploads whose transport measured progress, that
+  still have bytes to send and sent nothing since the resume. No progress
+  events = unknown, never stalled; Tor's estimate is marked `estimated`.
+- At most `MAX_FREE_STALL_RESTARTS` (2) free restarts per upload; the next
+  stall is a counted retry, so a link that keeps dying ends as failed with a
+  working Retry (Retry resets the free restarts).
+- Resume re-arms only uploads that failed while the app was in the
+  background; media that failed in the foreground keep their Retry.
+- The deadline is a watch on the upload: max(4 min, size at 50 KB/s), and it
+  aborts the upload and waits for it to settle (up to 30 s for the native Tor
+  upload, which cannot be cancelled) before the counted retry starts.
+- In the foreground, an upload with measured progress whose bytes stop moving
+  for 90 s is aborted as a counted failure instead of waiting for the deadline.
+
+Tests: `local-db/__tests__/sync-engine-resume-loop.test.ts` (each case failed
+on the committed code first), `sync-engine-background-resume.test.ts` updated
+to the background-gated resume, `auth/lib/matrix-reconnect.test.ts`.
