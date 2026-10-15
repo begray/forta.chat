@@ -203,3 +203,17 @@ describe("enqueueMediaSend", () => {
     expect(await db.attachments.count()).toBe(0);
   });
 });
+
+describe("inline uploads without an op", () => {
+  it("a GIF created with uploadPhase is not swept while it uploads", async () => {
+    await db.rooms.add({ id: ROOM } as LocalRoom);
+    const gif = await repo.createLocal({
+      roomId: ROOM, senderId: "me", content: "GIF", type: MessageType.image, uploadProgress: 0, uploadPhase: "uploading",
+    });
+    await db.messages.update(gif.localId!, { timestamp: Date.now() - 5 * 60_000 });
+
+    await watchdogTick();
+
+    expect((await db.messages.get(gif.localId!))?.status).toBe("pending");
+  });
+});

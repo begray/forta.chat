@@ -1723,6 +1723,8 @@ export function useMessages() {
           },
           localBlobUrl,
           uploadProgress: 0,
+          // No queue op behind this upload: tell the orphan sweep it runs inline.
+          uploadPhase: "uploading",
         });
 
         // Async upload pipeline (with per-phase timeouts)

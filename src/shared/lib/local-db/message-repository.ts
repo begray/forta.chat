@@ -235,6 +235,9 @@ export class MessageRepository {
     linkPreview?: LocalMessage["linkPreview"];
     localBlobUrl?: string;
     uploadProgress?: number;
+    /** Set by sends that upload inline, without a queue op (GIF): keeps the
+     *  watchdog's orphan sweep off them while they run. */
+    uploadPhase?: LocalMessage["uploadPhase"];
     /** Pre-generated clientId (media sends log their steps under it before
      *  the row exists). */
     clientId?: string;
@@ -263,6 +266,7 @@ export class MessageRepository {
       linkPreview: params.linkPreview,
       localBlobUrl: params.localBlobUrl,
       uploadProgress: params.uploadProgress,
+      uploadPhase: params.uploadPhase,
     };
 
     await this.db.transaction("rw", [this.db.messages, this.db.rooms], async () => {
