@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useI18n, type TranslationKey } from "@/shared/lib/i18n";
 import { useSendErrorBus } from "../model/send-error-bus";
 import { sendErrorI18nKey, type SendErrorKind } from "../model/send-errors";
+import { formatFileMegabytes, formatLimitMegabytes } from "@/shared/lib/file-transfer/upload-limit";
 
 const { t } = useI18n();
 const { error, clear } = useSendErrorBus();
@@ -16,6 +17,15 @@ const labelKey = computed<TranslationKey>(() =>
     ? (sendErrorI18nKey(error.value.kind as SendErrorKind) as TranslationKey)
     : ("errors.send.unknown" as TranslationKey),
 );
+/** "Video is 92.8 MB; the limit is 52 MB" when the sizes are known. */
+const label = computed(() => {
+  const ctx = error.value?.context;
+  if (error.value?.kind === "fileTooLarge" && ctx?.sizeBytes && ctx.limitBytes) {
+    const params = { size: formatFileMegabytes(ctx.sizeBytes), limit: formatLimitMegabytes(ctx.limitBytes) };
+    return ctx.kind === "video" ? t("errors.send.videoTooLargeSized", params) : t("errors.send.fileTooLargeSized", params);
+  }
+  return t(labelKey.value);
+});
 const retryable = computed(() => !!error.value?.retry && error.value.retryable);
 
 /** Banner stays open after a retry triggers — the new send will either
@@ -52,7 +62,7 @@ const onDismiss = () => {
         <line x1="12" y1="8" x2="12" y2="12" />
         <line x1="12" y1="16" x2="12.01" y2="16" />
       </svg>
-      <span class="flex-1 leading-snug">{{ t(labelKey) }}</span>
+      <span class="flex-1 leading-snug">{{ label }}</span>
       <button
         v-if="retryable"
         type="button"

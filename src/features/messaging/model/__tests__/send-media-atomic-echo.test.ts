@@ -203,3 +203,26 @@ describe("media local echo is all-or-nothing", () => {
     expect(events).toEqual(["send:start", "read:ok", "echo:ok"]);
   });
 });
+
+describe("files over the server upload limit", () => {
+  /** A picked video that reports `size` without allocating it. */
+  function bigVideo(size: number): File {
+    const file = new File(["mp4"], "name(48).mp4", { type: "video/mp4" });
+    Object.defineProperty(file, "size", { value: size });
+    return file;
+  }
+
+  it("a 92.8 MB video is refused before any bubble, with both sizes in the error", async () => {
+    const { sendFile } = useMessages();
+
+    expect(await sendFile(bigVideo(92_782_267))).toBe(false);
+
+    expect(await counts()).toEqual({ messages: 0, attachments: 0, ops: 0 });
+    expect(h.reportSendError).toHaveBeenCalledTimes(1);
+    const err = h.reportSendError.mock.calls[0][0] as { kind: string; retryable: boolean; context: Record<string, unknown> };
+    expect(err.kind).toBe("fileTooLarge");
+    expect(err.retryable).toBe(false);
+    expect(err.context).toMatchObject({ kind: "video", sizeBytes: 92_782_267, limitBytes: 50 * 1024 * 1024 });
+    expect(getUploadLog().find((e) => e.e === "send:dropped")?.d).toMatchObject({ reason: "too large", size: 92_782_267 });
+  });
+});

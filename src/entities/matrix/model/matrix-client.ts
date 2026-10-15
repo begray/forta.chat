@@ -1182,6 +1182,31 @@ export class MatrixClientService {
     };
   }
 
+  /** The server's upload limit (`m.upload.size`), or undefined when it does
+   *  not say. Tries the authenticated media config (Matrix v1.11), then the
+   *  legacy media/v3 one. */
+  async getMediaUploadLimit(): Promise<number | undefined> {
+    if (!this.client) return undefined;
+    const read = (res: unknown): number | undefined => {
+      const size = (res as { "m.upload.size"?: unknown } | null)?.["m.upload.size"];
+      return typeof size === "number" && size > 0 ? size : undefined;
+    };
+    const client = this.client as unknown as {
+      http: { authedRequest: (method: string, path: string, query?: unknown, body?: unknown, opts?: { prefix: string }) => Promise<unknown> };
+    };
+    try {
+      const size = read(await client.http.authedRequest("GET", "/media/config", undefined, undefined, { prefix: "/_matrix/client/v1" }));
+      if (size !== undefined) return size;
+    } catch {
+      // Server without authenticated media: try the legacy endpoint.
+    }
+    try {
+      return read(await client.http.authedRequest("GET", "/config", undefined, undefined, { prefix: "/_matrix/media/v3" }));
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Upload content to Matrix server.
    *  @param progressHandler — optional callback receiving { loaded, total };
    *    `estimated` marks the native Tor upload's time-based figure

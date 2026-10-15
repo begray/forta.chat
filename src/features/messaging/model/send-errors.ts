@@ -17,6 +17,9 @@ export interface SendErrorContext {
   fileName?: string;
   kind?: "image" | "video" | "audio" | "file";
   cause?: unknown;
+  /** fileTooLarge: the file's size and the upload limit, in bytes. */
+  sizeBytes?: number;
+  limitBytes?: number;
 }
 
 export class SendError extends Error {
