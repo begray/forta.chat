@@ -225,4 +225,13 @@ describe("files over the server upload limit", () => {
     expect(err.context).toMatchObject({ kind: "video", sizeBytes: 92_782_267, limitBytes: 50 * 1024 * 1024 });
     expect(getUploadLog().find((e) => e.e === "send:dropped")?.d).toMatchObject({ reason: "too large", size: 92_782_267 });
   });
+
+  it("a file under the limit is queued with its size in the op (for queue overtaking)", async () => {
+    const { sendFile } = useMessages();
+
+    expect(await sendFile(new File(["pdf"], "doc.pdf", { type: "application/pdf" }))).toBe(true);
+
+    const [op] = await db.pendingOps.toArray();
+    expect(op.payload.size).toBe(3);
+  });
 });
