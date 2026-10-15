@@ -24,6 +24,7 @@ import { isServerEventId } from "./redact-target";
 import { SendError, sendDiag } from "./send-errors";
 import { reportSendError } from "./send-error-bus";
 import { optimizeChatImage } from "@/shared/lib/upload-image";
+import { logUpload, logUploadError, fileLabel } from "@/shared/lib/upload-log/upload-log";
 
 /** Per-phase media pipeline timeouts. Splitting the old single 5-minute cap
  *  lets us surface phase-specific failures (e.g. crypto hang vs upload stall)
@@ -118,6 +119,34 @@ export async function convertHeicToJpeg(file: File): Promise<File> {
   }
 }
 
+/** Reading a picked file must not hang a send forever: a cloud item the
+ *  provider cannot fetch may never settle. 30 s, or 512 KB/s for big files. */
+const FILE_READ_MIN_TIMEOUT_MS = 30_000;
+const FILE_READ_MIN_BYTES_PER_SEC = 512 * 1024;
+/** Image decode (dimensions, downscale) has no timeout of its own. */
+const IMAGE_PREP_TIMEOUT_MS = 20_000;
+
+/** Read a picked File fully into memory before anything is shown.
+ *  On Android the picker hands over content:// backed Files that the WebView
+ *  reads lazily. A cloud item (e.g. Google Photos) or an expired grant then
+ *  failed only when IndexedDB copied the bytes — after the bubble was already
+ *  on screen, leaving it "sending" forever. Reading up front turns that into
+ *  an immediate error, and the preview and the persisted copy come from
+ *  memory instead of the provider. */
+export async function readPickedFile(file: File): Promise<File> {
+  const timeoutMs = Math.max(FILE_READ_MIN_TIMEOUT_MS, (file.size / FILE_READ_MIN_BYTES_PER_SEC) * 1000);
+  const bytes = await withTimeout(file.arrayBuffer(), timeoutMs, "Reading the file");
+  if (bytes.byteLength === 0) throw new Error(`The file is empty (reported size ${file.size})`);
+  return new File([bytes], file.name, { type: file.type, lastModified: file.lastModified });
+}
+
+/** Errors IndexedDB / the WebView raise when a File's bytes cannot be read. */
+function isUnreadableFileError(e: unknown): boolean {
+  const name = (e as { name?: string } | null)?.name ?? "";
+  const inner = (e as { inner?: { name?: string } } | null)?.inner?.name ?? "";
+  return [name, inner].some((n) => n === "NotReadableError" || n === "NotFoundError" || n === "UnknownError" || n === "DataCloneError");
+}
+
 /** Track which clientIds are already being cancelled (prevent double invocation) */
 const cancellingSet = new Set<string>();
 
@@ -180,6 +209,49 @@ export function useMessages() {
       img.onerror = () => { URL.revokeObjectURL(img.src); resolve({ w: 0, h: 0 }); };
       img.src = URL.createObjectURL(file);
     });
+  };
+
+  type MediaKind = "image" | "video" | "audio" | "file";
+
+  /** Read a picked file for sending; on failure report it and return null. */
+  const readForSend = async (file: File, clientId: string, kind: MediaKind): Promise<File | null> => {
+    const startedAt = Date.now();
+    try {
+      const read = await readPickedFile(file);
+      logUpload("read:ok", clientId, { ms: Date.now() - startedAt, size: read.size });
+      return read;
+    } catch (e) {
+      logUploadError("read:fail", clientId, e, { ms: Date.now() - startedAt, size: file.size });
+      console.error("[use-messages] cannot read the picked file:", e);
+      reportSendError(new SendError("fileUnreadable", `Cannot read ${file.name}`, { fileName: file.name, kind, cause: e }, false));
+      return null;
+    }
+  };
+
+  /** Write the bubble, the file copy and the send_file op in one
+   *  transaction (SyncEngine.enqueueMediaSend). On failure nothing is left
+   *  behind: the error is logged and shown, and the caller returns false. */
+  const persistMediaSend = async (
+    kind: MediaKind,
+    params: Parameters<ReturnType<typeof getChatDb>["syncEngine"]["enqueueMediaSend"]>[0],
+  ): Promise<boolean> => {
+    const { clientId, localBlobUrl } = params.message;
+    try {
+      await getChatDb().syncEngine.enqueueMediaSend(params);
+      sendDiag(`${kind}:enqueued`, { clientId });
+      return true;
+    } catch (e) {
+      if (localBlobUrl) URL.revokeObjectURL(localBlobUrl);
+      logUploadError("echo:fail", clientId, e, { size: params.attachment.size });
+      console.error("[use-messages] could not queue the media send:", e);
+      const fileName = params.attachment.fileName;
+      reportSendError(
+        isUnreadableFileError(e)
+          ? new SendError("fileUnreadable", `Cannot read ${fileName}`, { fileName, kind, cause: e }, false)
+          : new SendError("unknown", (e as Error)?.message ?? String(e), { fileName, kind, cause: e }),
+      );
+      return false;
+    }
   };
 
   /**
@@ -376,21 +448,28 @@ export function useMessages() {
       sendDiag("file:no-room-or-file", { hasRoom: !!roomId, hasFile: !!file });
       return false;
     }
+    const clientId = crypto.randomUUID();
+    logUpload("send:start", clientId, { kind: "file", mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
 
     if (file.size > MAX_UPLOAD_SIZE) {
       console.warn(`[use-messages] File too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`);
+      logUpload("send:dropped", clientId, { reason: "too large" });
       reportSendError(new SendError("fileTooLarge", `File too large: ${file.name}`, { fileName: file.name, kind: "file" }, false));
       return false;
     }
 
+    const readFile = await readForSend(file, clientId, "file");
+    if (!readFile) return false;
+
     // Android WebView cannot render HEIC; convertHeicToJpeg short-circuits
     // for non-HEIC inputs, so calling it unconditionally is safe and keeps
     // the two send paths symmetric.
-    const processedFile = await convertHeicToJpeg(file);
+    const processedFile = await convertHeicToJpeg(readFile);
 
     const matrixService = getMatrixClientService();
     if (!matrixService.isReady()) {
       sendDiag("file:matrix-not-ready");
+      logUpload("send:dropped", clientId, { reason: "matrix not ready" });
       reportSendError(new SendError("matrixNotReady", "Matrix client not ready", { fileName: file.name, kind: "file" }));
       return false;
     }
@@ -411,52 +490,43 @@ export function useMessages() {
       // Without Dexie we have no crash-safe queue — dropping the send is
       // safer than leaking a never-completing toast on a dead pipeline.
       console.error("[use-messages] sendFile: chat DB not ready");
+      logUpload("send:dropped", clientId, { reason: "db not ready" });
       reportSendError(new SendError("dbNotReady", "Local database not ready", { fileName: file.name, kind: "file" }));
       URL.revokeObjectURL(localBlobUrl);
       return false;
     }
 
-    const dbKit = getChatDb();
-    const localMsg = await dbKit.messages.createLocal({
-      roomId,
-      senderId: authStore.address ?? "",
-      content: processedFile.name,
-      type: msgType,
-      fileInfo: {
-        name: processedFile.name,
-        type: mime,
-        size: processedFile.size,
-        url: localBlobUrl,
+    // The persisted blob lets SyncEngine.syncSendFile resume after a crash.
+    return persistMediaSend("file", {
+      message: {
+        clientId,
+        roomId,
+        senderId: authStore.address ?? "",
+        content: processedFile.name,
+        type: msgType,
+        fileInfo: {
+          name: processedFile.name,
+          type: mime,
+          size: processedFile.size,
+          url: localBlobUrl,
+        },
+        forwardedFrom: options.forwardedFrom,
+        localBlobUrl,
+        uploadProgress: 0,
       },
-      forwardedFrom: options.forwardedFrom,
-      localBlobUrl,
-      uploadProgress: 0,
-    });
-
-    // Persist blob so SyncEngine.syncSendFile can resume after a crash.
-    const attachmentId = await dbKit.db.attachments.add({
-      messageLocalId: localMsg.localId!,
-      fileName: processedFile.name,
-      mimeType: mime,
-      size: processedFile.size,
-      localBlob: processedFile,
-      status: "local",
-    });
-
-    await dbKit.syncEngine.enqueue(
-      "send_file",
-      roomId,
-      {
+      attachment: {
+        fileName: processedFile.name,
+        mimeType: mime,
+        size: processedFile.size,
+        localBlob: processedFile,
+      },
+      payload: {
         fileName: processedFile.name,
         mimeType: mime,
         msgtype: "m.file",
-        attachmentId,
         ...(options.forwardedFrom ? { forwardedFrom: options.forwardedFrom } : {}),
       },
-      localMsg.clientId,
-    );
-    sendDiag("file:enqueued", { clientId: localMsg.clientId });
-    return true;
+    });
   };
 
   /** Send an image message (m.image event — compatible with bastyon-chat).
@@ -475,77 +545,93 @@ export function useMessages() {
       sendDiag("image:no-room-or-file", { hasRoom: !!roomId, hasFile: !!file });
       return false;
     }
+    const clientId = crypto.randomUUID();
+    logUpload("send:start", clientId, { kind: "image", mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
 
     if (file.size > MAX_UPLOAD_SIZE) {
       console.warn(`[use-messages] Image too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`);
+      logUpload("send:dropped", clientId, { reason: "too large" });
       reportSendError(new SendError("fileTooLarge", `Image too large: ${file.name}`, { fileName: file.name, kind: "image" }, false));
       return false;
     }
 
+    const readFile = await readForSend(file, clientId, "image");
+    if (!readFile) return false;
+
     // HEIC must be converted before getImageDimensions — Chromium <img> cannot
     // decode HEIC at all, so reading naturalWidth/Height on the original blob
     // would produce zeros and corrupt the m.image event payload.
-    const converted = await convertHeicToJpeg(file);
+    const prepStartedAt = Date.now();
+    const converted = await convertHeicToJpeg(readFile);
     // Downscale to 2048 px / q=0.85 (sendFile keeps the original). Forwards are
     // skipped: the sender already optimized it and a second encode only loses quality.
-    const processedFile = options.forwardedFrom ? converted : await optimizeChatImage(converted);
+    // A decode that never settles sends the original instead of hanging.
+    const processedFile = options.forwardedFrom
+      ? converted
+      : await withTimeout(optimizeChatImage(converted), IMAGE_PREP_TIMEOUT_MS, "Image optimize").catch((e) => {
+          logUploadError("prep:optimize-fail", clientId, e);
+          return converted;
+        });
 
     const matrixService = getMatrixClientService();
     if (!matrixService.isReady()) {
       sendDiag("image:matrix-not-ready");
+      logUpload("send:dropped", clientId, { reason: "matrix not ready" });
       reportSendError(new SendError("matrixNotReady", "Matrix client not ready", { fileName: file.name, kind: "image" }));
       return false;
     }
 
-    const dimensions = await getImageDimensions(processedFile);
+    const dimensions = await withTimeout(getImageDimensions(processedFile), IMAGE_PREP_TIMEOUT_MS, "Image dimensions")
+      .catch(() => ({ w: 0, h: 0 }));
     const imageMime = resolveMime(processedFile);
+    logUpload("prep:ok", clientId, {
+      ms: Date.now() - prepStartedAt,
+      size: processedFile.size,
+      mime: imageMime,
+      w: dimensions.w,
+      h: dimensions.h,
+    });
     const localBlobUrl = URL.createObjectURL(processedFile);
 
     if (!isChatDbReady()) {
       console.error("[use-messages] sendImage: chat DB not ready");
+      logUpload("send:dropped", clientId, { reason: "db not ready" });
       reportSendError(new SendError("dbNotReady", "Local database not ready", { fileName: file.name, kind: "image" }));
       URL.revokeObjectURL(localBlobUrl);
       return false;
     }
 
-    const dbKit = getChatDb();
-    const localMsg = await dbKit.messages.createLocal({
-      roomId,
-      senderId: authStore.address ?? "",
-      content: options.caption || processedFile.name,
-      type: MessageType.image,
-      fileInfo: {
-        name: processedFile.name,
-        type: imageMime,
-        size: processedFile.size,
-        url: localBlobUrl,
-        w: dimensions.w,
-        h: dimensions.h,
-        caption: options.caption,
-        captionAbove: options.captionAbove,
+    return persistMediaSend("image", {
+      message: {
+        clientId,
+        roomId,
+        senderId: authStore.address ?? "",
+        content: options.caption || processedFile.name,
+        type: MessageType.image,
+        fileInfo: {
+          name: processedFile.name,
+          type: imageMime,
+          size: processedFile.size,
+          url: localBlobUrl,
+          w: dimensions.w,
+          h: dimensions.h,
+          caption: options.caption,
+          captionAbove: options.captionAbove,
+        },
+        forwardedFrom: options.forwardedFrom,
+        localBlobUrl,
+        uploadProgress: 0,
       },
-      forwardedFrom: options.forwardedFrom,
-      localBlobUrl,
-      uploadProgress: 0,
-    });
-
-    const attachmentId = await dbKit.db.attachments.add({
-      messageLocalId: localMsg.localId!,
-      fileName: processedFile.name,
-      mimeType: imageMime,
-      size: processedFile.size,
-      localBlob: processedFile,
-      status: "local",
-    });
-
-    await dbKit.syncEngine.enqueue(
-      "send_file",
-      roomId,
-      {
+      attachment: {
+        fileName: processedFile.name,
+        mimeType: imageMime,
+        size: processedFile.size,
+        localBlob: processedFile,
+      },
+      payload: {
         fileName: processedFile.name,
         mimeType: imageMime,
         msgtype: "m.image",
-        attachmentId,
         body: options.caption || "Image",
         eventInfo: {
           w: dimensions.w,
@@ -557,10 +643,7 @@ export function useMessages() {
         },
         ...(options.forwardedFrom ? { forwardedFrom: options.forwardedFrom } : {}),
       },
-      localMsg.clientId,
-    );
-    sendDiag("image:enqueued", { clientId: localMsg.clientId });
-    return true;
+    });
   };
 
   /** Send an audio/voice message (m.audio event — compatible with bastyon-chat).
@@ -599,55 +682,52 @@ export function useMessages() {
         ? options.duration
         : undefined;
 
+    const clientId = crypto.randomUUID();
+    logUpload("send:start", clientId, { kind: "audio", mime: audioMime, size: file.size });
+
     if (!isChatDbReady()) {
       console.error("[use-messages] sendAudio: chat DB not ready");
+      logUpload("send:dropped", clientId, { reason: "db not ready" });
       reportSendError(new SendError("dbNotReady", "Local database not ready", { fileName: file.name, kind: "audio" }));
       URL.revokeObjectURL(localBlobUrl);
       return false;
     }
 
-    const dbKit = getChatDb();
-    const localMsg = await dbKit.messages.createLocal({
-      roomId,
-      senderId: authStore.address ?? "",
-      content: "Audio",
-      type: MessageType.audio,
-      fileInfo: {
-        name: file.name,
-        type: audioMime,
-        size: file.size,
-        url: localBlobUrl,
-        duration: durationSec,
-        waveform: options.waveform,
-        // Voice recordings created via VoiceRecorder are always voice messages;
-        // recipients without an MSC3245 marker (older app versions) keep the
-        // waveform-presence heuristic as a fallback.
-        isVoice: true,
-      },
-      forwardedFrom: options.forwardedFrom,
-      localBlobUrl,
-      uploadProgress: 0,
-    });
-
-    const attachmentId = await dbKit.db.attachments.add({
-      messageLocalId: localMsg.localId!,
-      fileName: file.name,
-      mimeType: audioMime,
-      size: file.size,
-      localBlob: file,
-      status: "local",
-    });
-
     const intWaveform = options.waveform?.map((v: number) => Math.round(v * 1024));
 
-    await dbKit.syncEngine.enqueue(
-      "send_file",
-      roomId,
-      {
+    return persistMediaSend("audio", {
+      message: {
+        clientId,
+        roomId,
+        senderId: authStore.address ?? "",
+        content: "Audio",
+        type: MessageType.audio,
+        fileInfo: {
+          name: file.name,
+          type: audioMime,
+          size: file.size,
+          url: localBlobUrl,
+          duration: durationSec,
+          waveform: options.waveform,
+          // Voice recordings created via VoiceRecorder are always voice messages;
+          // recipients without an MSC3245 marker (older app versions) keep the
+          // waveform-presence heuristic as a fallback.
+          isVoice: true,
+        },
+        forwardedFrom: options.forwardedFrom,
+        localBlobUrl,
+        uploadProgress: 0,
+      },
+      attachment: {
+        fileName: file.name,
+        mimeType: audioMime,
+        size: file.size,
+        localBlob: file,
+      },
+      payload: {
         fileName: file.name,
         mimeType: audioMime,
         msgtype: "m.audio",
-        attachmentId,
         body: "Audio",
         eventInfo: {
           mimetype: audioMime,
@@ -662,10 +742,7 @@ export function useMessages() {
         eventExtras: { "org.matrix.msc3245.voice": {} },
         ...(options.forwardedFrom ? { forwardedFrom: options.forwardedFrom } : {}),
       },
-      localMsg.clientId,
-    );
-    sendDiag("audio:enqueued", { clientId: localMsg.clientId });
-    return true;
+    });
   };
 
   /** Send a video circle (video note) message — circular video like Telegram.
@@ -695,54 +772,51 @@ export function useMessages() {
     const videoMime = resolveMime(file);
     const localBlobUrl = URL.createObjectURL(file);
 
+    const clientId = crypto.randomUUID();
+    logUpload("send:start", clientId, { kind: "videoCircle", mime: videoMime, size: file.size });
+
     if (!isChatDbReady()) {
       // Without Dexie there is no crash-safe queue — dropping the send is
       // safer than leaking a never-completing spinner on a dead pipeline.
       console.error("[use-messages] sendVideoCircle: chat DB not ready");
+      logUpload("send:dropped", clientId, { reason: "db not ready" });
       reportSendError(new SendError("dbNotReady", "Local database not ready", { fileName: file.name, kind: "file" }));
       URL.revokeObjectURL(localBlobUrl);
       return false;
     }
 
-    const dbKit = getChatDb();
-    const localMsg = await dbKit.messages.createLocal({
-      roomId,
-      senderId: authStore.address ?? "",
-      content: "Video message",
-      type: MessageType.videoCircle,
-      fileInfo: {
-        name: file.name,
-        type: videoMime,
-        size: file.size,
-        url: localBlobUrl,
-        w: 480,
-        h: 480,
-        duration: options.duration,
-        videoNote: true,
+    // The persisted blob lets SyncEngine.syncSendFile resume after a crash.
+    return persistMediaSend("video", {
+      message: {
+        clientId,
+        roomId,
+        senderId: authStore.address ?? "",
+        content: "Video message",
+        type: MessageType.videoCircle,
+        fileInfo: {
+          name: file.name,
+          type: videoMime,
+          size: file.size,
+          url: localBlobUrl,
+          w: 480,
+          h: 480,
+          duration: options.duration,
+          videoNote: true,
+        },
+        forwardedFrom: options.forwardedFrom,
+        localBlobUrl,
+        uploadProgress: 0,
       },
-      forwardedFrom: options.forwardedFrom,
-      localBlobUrl,
-      uploadProgress: 0,
-    });
-
-    // Persist the blob so SyncEngine.syncSendFile can resume after a crash.
-    const attachmentId = await dbKit.db.attachments.add({
-      messageLocalId: localMsg.localId!,
-      fileName: file.name,
-      mimeType: videoMime,
-      size: file.size,
-      localBlob: file,
-      status: "local",
-    });
-
-    await dbKit.syncEngine.enqueue(
-      "send_file",
-      roomId,
-      {
+      attachment: {
+        fileName: file.name,
+        mimeType: videoMime,
+        size: file.size,
+        localBlob: file,
+      },
+      payload: {
         fileName: file.name,
         mimeType: videoMime,
         msgtype: "m.video",
-        attachmentId,
         body: "Video message",
         eventInfo: {
           w: 480,
@@ -759,10 +833,7 @@ export function useMessages() {
         },
         ...(options.forwardedFrom ? { forwardedFrom: options.forwardedFrom } : {}),
       },
-      localMsg.clientId,
-    );
-    sendDiag("videoCircle:enqueued", { clientId: localMsg.clientId });
-    return true;
+    });
   };
 
   /** Resolves to the parsed message count (see chatStore.loadRoomMessages). */

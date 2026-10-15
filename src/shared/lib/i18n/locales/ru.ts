@@ -1161,6 +1161,7 @@ export const ru: Record<TranslationKey, string> = {
   "errors.send.micDenied": "Нет доступа к микрофону. Разрешите доступ в настройках приложения.",
   "errors.send.pickerCancelled": "Файл не выбран.",
   "errors.send.fileTooLarge": "Файл слишком большой (максимум 100 МБ).",
+  "errors.send.fileUnreadable": "Не удалось прочитать файл, он не отправлен. Если он в облаке (например, Google Фото), сохраните его на телефон и выберите снова.",
   "errors.send.dbNotReady": "Локальная база ещё не готова. Подождите и попробуйте снова.",
   "errors.send.matrixNotReady": "Соединение ещё не установлено. Подождите и попробуйте снова.",
   "errors.send.cryptoNotReady": "Ключи шифрования ещё загружаются. Подождите.",

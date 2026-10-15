@@ -1,5 +1,5 @@
 import { buildEditContent } from "./edit-content";
-import type { ChatDatabase, PendingOperation, LocalMessage } from "./schema";
+import type { ChatDatabase, PendingOperation, LocalMessage, LocalAttachment } from "./schema";
 import type { MessageRepository } from "./message-repository";
 import type { RoomRepository } from "./room-repository";
 import { getMatrixClientService } from "@/entities/matrix";
@@ -272,6 +272,26 @@ async function uploadWithRetry(
     }
   }
   throw lastErr;
+}
+
+function newPendingOp(
+  type: PendingOperation["type"],
+  roomId: string,
+  payload: Record<string, unknown>,
+  clientId: string | undefined,
+  maxRetries = 5,
+): PendingOperation {
+  return {
+    type,
+    roomId,
+    payload,
+    status: "pending",
+    retries: 0,
+    maxRetries,
+    createdAt: Date.now(),
+    clientId: clientId ?? crypto.randomUUID(),
+    nextAttemptAt: 0, // due immediately
+  };
 }
 
 /**
@@ -1650,21 +1670,53 @@ export class SyncEngine {
     clientId?: string,
     maxRetries = 5,
   ): Promise<number> {
-    const id = await this.db.pendingOps.add({
-      type,
-      roomId,
-      payload,
-      status: "pending",
-      retries: 0,
-      maxRetries,
-      createdAt: Date.now(),
-      clientId: clientId ?? crypto.randomUUID(),
-      nextAttemptAt: 0, // due immediately
-    });
+    const id = await this.db.pendingOps.add(newPendingOp(type, roomId, payload, clientId, maxRetries));
 
     // Kick off processing (non-blocking)
     this.processQueue();
     return id as number;
+  }
+
+  /**
+   * Local echo of a media send: the pending bubble, the persisted file and
+   * its send_file op, written in ONE transaction. Written as three separate
+   * steps, a failure after the first (typically the picked file turning out
+   * unreadable when IndexedDB copies it) left a "sending" bubble with no file
+   * and no op behind it, which nothing ever completed or failed. Now either
+   * all three exist or none does, and the caller gets the error.
+   *
+   * `payload.attachmentId` is filled in here.
+   */
+  async enqueueMediaSend(params: {
+    message: Parameters<MessageRepository["createLocal"]>[0];
+    attachment: Omit<LocalAttachment, "id" | "messageLocalId" | "status">;
+    payload: Record<string, unknown>;
+  }): Promise<{ message: LocalMessage; attachmentId: number; opId: number }> {
+    const { db } = this;
+    const result = await db.transaction(
+      "rw",
+      [db.messages, db.rooms, db.attachments, db.pendingOps],
+      async () => {
+        const message = await this.messageRepo.createLocal(params.message);
+        const attachmentId = (await db.attachments.add({
+          ...params.attachment,
+          messageLocalId: message.localId!,
+          status: "local",
+        })) as number;
+        const opId = (await db.pendingOps.add(
+          newPendingOp("send_file", params.message.roomId, { ...params.payload, attachmentId }, message.clientId),
+        )) as number;
+        return { message, attachmentId, opId };
+      },
+    );
+    logUpload("echo:ok", result.message.clientId, {
+      attachmentId: result.attachmentId,
+      op: result.opId,
+      size: params.attachment.size,
+      mime: params.attachment.mimeType,
+    });
+    this.processQueue();
+    return result;
   }
 
   /** Retry a specific failed operation */

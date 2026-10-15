@@ -29,7 +29,16 @@ vi.mock("@/shared/lib/local-db", () => ({
       updateUploadProgress: vi.fn(),
       confirmMediaSent: vi.fn(),
     },
-    syncEngine: { enqueue: mocks.enqueueSpy },
+    // enqueueMediaSend does these three writes in one transaction.
+    syncEngine: {
+      enqueue: mocks.enqueueSpy,
+      enqueueMediaSend: async (p: { message: { roomId: string }; attachment: Record<string, unknown>; payload: Record<string, unknown> }) => {
+        const message = await mocks.createLocalSpy(p.message);
+        const attachmentId = await mocks.attachmentsAddSpy({ ...p.attachment, messageLocalId: message.localId, status: "local" });
+        const opId = await mocks.enqueueSpy("send_file", p.message.roomId, { ...p.payload, attachmentId }, message.clientId);
+        return { message, attachmentId, opId };
+      },
+    },
     db: {
       attachments: { add: mocks.attachmentsAddSpy },
       messages: { where: vi.fn(() => ({ equals: vi.fn(() => ({ modify: vi.fn() })) })) },

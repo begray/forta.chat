@@ -1159,6 +1159,7 @@ export const en = {
   "errors.send.micDenied": "No access to the microphone. Grant access in app settings.",
   "errors.send.pickerCancelled": "No file selected.",
   "errors.send.fileTooLarge": "File too large (max 100 MB).",
+  "errors.send.fileUnreadable": "Could not read the file, so it was not sent. If it is in the cloud (e.g. Google Photos), save it to the phone and pick it again.",
   "errors.send.dbNotReady": "Local database is not ready yet. Wait and try again.",
   "errors.send.matrixNotReady": "Connection is not ready yet. Wait and try again.",
   "errors.send.cryptoNotReady": "Encryption keys are still loading. Please wait.",

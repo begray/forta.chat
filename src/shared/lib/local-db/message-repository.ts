@@ -235,8 +235,11 @@ export class MessageRepository {
     linkPreview?: LocalMessage["linkPreview"];
     localBlobUrl?: string;
     uploadProgress?: number;
+    /** Pre-generated clientId (media sends log their steps under it before
+     *  the row exists). */
+    clientId?: string;
   }): Promise<LocalMessage> {
-    const clientId = crypto.randomUUID();
+    const clientId = params.clientId ?? crypto.randomUUID();
     const now = Date.now();
     const msgType = params.type ?? MessageType.text;
 
