@@ -29,7 +29,7 @@ import { APP_MAX_UPLOAD_BYTES } from "@/shared/lib/file-transfer/upload-limit";
 import { checkUploadSize, tooLargeError } from "./upload-size";
 import { prepareVideoForSend } from "./video-compression";
 import { fileSourceOf, pickedAgoS, releaseFileSource } from "./picked-media";
-import { readPickedFile } from "./read-picked-file";
+import { isUnreadableFileError, readPickedFile } from "./read-picked-file";
 import { buildVideoSendPayload } from "./video-message";
 import { describeVideoForSend } from "./video-send-meta";
 
@@ -129,13 +129,6 @@ export async function convertHeicToJpeg(file: File): Promise<File> {
 /** Image decode (dimensions, downscale) has no timeout of its own. */
 const IMAGE_PREP_TIMEOUT_MS = 20_000;
 
-/** Errors IndexedDB / the WebView raise when a File's bytes cannot be read. */
-function isUnreadableFileError(e: unknown): boolean {
-  const name = (e as { name?: string } | null)?.name ?? "";
-  const inner = (e as { inner?: { name?: string } } | null)?.inner?.name ?? "";
-  return [name, inner].some((n) => n === "NotReadableError" || n === "NotFoundError" || n === "UnknownError" || n === "DataCloneError");
-}
-
 /** Track which clientIds are already being cancelled (prevent double invocation) */
 const cancellingSet = new Set<string>();
 
@@ -172,11 +165,23 @@ async function handleUploadCancelled(
   }
 }
 
-/** Options of sendFile. A caption only applies to videos (m.video). */
+/** Options of sendFile. A batch (media-batch.ts) picks the clientId, so it
+ *  can follow the item, and the room, since it sends after the user may
+ *  have left the chat. A caption only applies to videos (m.video). */
 export interface SendFileOptions {
   forwardedFrom?: { senderId: string; senderName?: string };
+  clientId?: string;
+  roomId?: string;
   caption?: string;
   captionAbove?: boolean;
+}
+
+export interface SendImageOptions {
+  caption?: string;
+  captionAbove?: boolean;
+  forwardedFrom?: { senderId: string; senderName?: string };
+  clientId?: string;
+  roomId?: string;
 }
 
 export function useMessages() {
@@ -224,7 +229,7 @@ export function useMessages() {
         agoS: pickedAgoS(file),
       });
       console.error("[use-messages] cannot read the picked file:", e);
-      reportSendError(new SendError("fileUnreadable", `Cannot read ${file.name}`, { fileName: file.name, kind, cause: e }, false));
+      reportSendError(new SendError("fileUnreadable", `Cannot read ${file.name}`, { fileName: file.name, kind, cause: e, clientId }, false));
       return null;
     }
   };
@@ -248,8 +253,8 @@ export function useMessages() {
       const fileName = params.attachment.fileName;
       reportSendError(
         isUnreadableFileError(e)
-          ? new SendError("fileUnreadable", `Cannot read ${fileName}`, { fileName, kind, cause: e }, false)
-          : new SendError("unknown", (e as Error)?.message ?? String(e), { fileName, kind, cause: e }),
+          ? new SendError("fileUnreadable", `Cannot read ${fileName}`, { fileName, kind, cause: e, clientId }, false)
+          : new SendError("unknown", (e as Error)?.message ?? String(e), { fileName, kind, cause: e, clientId }),
       );
       return false;
     }
@@ -451,12 +456,13 @@ export function useMessages() {
 
   const sendFileOnce = async (file: File, options: SendFileOptions = {}): Promise<boolean> => {
     sendDiag("file:start", { name: file?.name, size: file?.size });
-    const roomId = chatStore.activeRoomId;
+    // A batch sends later than it was picked: it names the room itself.
+    const roomId = options.roomId ?? chatStore.activeRoomId;
     if (!roomId || !file) {
       sendDiag("file:no-room-or-file", { hasRoom: !!roomId, hasFile: !!file });
       return false;
     }
-    const clientId = crypto.randomUUID();
+    const clientId = options.clientId ?? crypto.randomUUID();
     logUpload("send:start", clientId, { kind: "file", mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
 
     // Big phone videos are compressed first (Android), so they fit the
@@ -504,7 +510,7 @@ export function useMessages() {
     if (!matrixService.isReady()) {
       sendDiag("file:matrix-not-ready");
       logUpload("send:dropped", clientId, { reason: "matrix not ready" });
-      reportSendError(new SendError("matrixNotReady", "Matrix client not ready", { fileName: file.name, kind: "file" }));
+      reportSendError(new SendError("matrixNotReady", "Matrix client not ready", { fileName: file.name, kind: "file", clientId }));
       return false;
     }
 
@@ -525,7 +531,7 @@ export function useMessages() {
       // safer than leaking a never-completing toast on a dead pipeline.
       console.error("[use-messages] sendFile: chat DB not ready");
       logUpload("send:dropped", clientId, { reason: "db not ready" });
-      reportSendError(new SendError("dbNotReady", "Local database not ready", { fileName: file.name, kind: "file" }));
+      reportSendError(new SendError("dbNotReady", "Local database not ready", { fileName: file.name, kind: "file", clientId }));
       URL.revokeObjectURL(localBlobUrl);
       return false;
     }
@@ -583,14 +589,7 @@ export function useMessages() {
 
   /** Send an image message (m.image event — compatible with bastyon-chat).
    *  See sendFile for the boolean return contract. */
-  const sendImage = async (
-    file: File,
-    options: {
-      caption?: string;
-      captionAbove?: boolean;
-      forwardedFrom?: { senderId: string; senderName?: string };
-    } = {},
-  ): Promise<boolean> => {
+  const sendImage = async (file: File, options: SendImageOptions = {}): Promise<boolean> => {
     try {
       return await sendImageOnce(file, options);
     } finally {
@@ -598,26 +597,21 @@ export function useMessages() {
     }
   };
 
-  const sendImageOnce = async (
-    file: File,
-    options: {
-      caption?: string;
-      captionAbove?: boolean;
-      forwardedFrom?: { senderId: string; senderName?: string };
-    } = {},
-  ): Promise<boolean> => {
+  const sendImageOnce = async (file: File, options: SendImageOptions = {}): Promise<boolean> => {
     sendDiag("image:start", { name: file?.name, size: file?.size });
-    const roomId = chatStore.activeRoomId;
+    const roomId = options.roomId ?? chatStore.activeRoomId;
     if (!roomId || !file) {
       sendDiag("image:no-room-or-file", { hasRoom: !!roomId, hasFile: !!file });
       return false;
     }
-    const clientId = crypto.randomUUID();
+    const clientId = options.clientId ?? crypto.randomUUID();
     logUpload("send:start", clientId, { kind: "image", mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
 
     if (file.size > APP_MAX_UPLOAD_BYTES) {
       logUpload("send:dropped", clientId, { reason: "too large", size: file.size, limit: APP_MAX_UPLOAD_BYTES });
-      reportSendError(tooLargeError(file, APP_MAX_UPLOAD_BYTES, "image"));
+      const err = tooLargeError(file, APP_MAX_UPLOAD_BYTES, "image");
+      err.context.clientId = clientId;
+      reportSendError(err);
       return false;
     }
 
@@ -643,7 +637,7 @@ export function useMessages() {
     if (!matrixService.isReady()) {
       sendDiag("image:matrix-not-ready");
       logUpload("send:dropped", clientId, { reason: "matrix not ready" });
-      reportSendError(new SendError("matrixNotReady", "Matrix client not ready", { fileName: file.name, kind: "image" }));
+      reportSendError(new SendError("matrixNotReady", "Matrix client not ready", { fileName: file.name, kind: "image", clientId }));
       return false;
     }
 
@@ -665,7 +659,7 @@ export function useMessages() {
     if (!isChatDbReady()) {
       console.error("[use-messages] sendImage: chat DB not ready");
       logUpload("send:dropped", clientId, { reason: "db not ready" });
-      reportSendError(new SendError("dbNotReady", "Local database not ready", { fileName: file.name, kind: "image" }));
+      reportSendError(new SendError("dbNotReady", "Local database not ready", { fileName: file.name, kind: "image", clientId }));
       URL.revokeObjectURL(localBlobUrl);
       return false;
     }
@@ -2270,6 +2264,11 @@ export function useMessages() {
   const cancelMediaUpload = async (message: Message): Promise<void> => {
     const mKey = (message as Message & { _key?: string })._key;
     if (!mKey) return;
+    await cancelMediaUploadByClientId(mKey);
+  };
+
+  /** The batch bar's per-item X (the same as the bubble's). */
+  const cancelMediaUploadByClientId = async (mKey: string): Promise<void> => {
     if (!isChatDbReady()) return;
 
     const dbKit = getChatDb();
@@ -2297,9 +2296,24 @@ export function useMessages() {
     await handleUploadCancelled(dbKit, mKey, localMsg.localBlobUrl);
   };
 
+  /** The batch summary's Retry: retry a failed upload by its clientId. */
+  const retryMediaByClientId = async (clientId: string): Promise<void> => {
+    if (!isChatDbReady()) return;
+    const row = await getChatDb().messages.getByClientId(clientId);
+    if (!row || row.status !== "failed" || !row.fileInfo) return;
+    await retryMediaUpload({
+      ...(row as unknown as Message),
+      id: row.eventId ?? row.clientId,
+      _key: row.clientId,
+      status: MessageStatus.failed,
+    } as Message & { _key: string });
+  };
+
   return {
     cancelFailedMessage,
     cancelMediaUpload,
+    cancelMediaUploadByClientId,
+    retryMediaByClientId,
     deleteMessage,
     deleteMessages,
     drainOfflineQueue,

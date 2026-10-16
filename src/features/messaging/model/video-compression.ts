@@ -28,6 +28,7 @@ import { reportSendError } from "./send-error-bus";
 import { fetchUploadLimit, tooLargeError } from "./upload-size";
 import { COMPRESS_THRESHOLD_BYTES, planVideoCompression, retryBitrate, shouldCompressVideo } from "./video-compress-plan";
 import { attachFileSource, fileSourceOf, pickedAgoS } from "./picked-media";
+import { isUnreadableFileError } from "./read-picked-file";
 import type { VideoFacts } from "./video-message";
 import { onBackground, onForeground } from "@/entities/auth/lib/matrix-reconnect";
 
@@ -252,7 +253,15 @@ function fallBack(file: File, clientId: string, limit: number, reason: string): 
     return { file, compressed: false, cleanup: async () => {} };
   }
   logUpload("send:dropped", clientId, { reason: `too large (${reason})`, size: file.size, limit });
-  reportSendError(tooLargeError(file, limit, "video"));
+  // Say what really happened: in the standbyfix6 batch the file could not
+  // be read at all, yet the banner blamed its size.
+  if (reason === "unreadable") {
+    reportSendError(new SendError("fileUnreadable", `Cannot read ${file.name}`, { fileName: file.name, kind: "video", clientId }, false));
+    return null;
+  }
+  const err = tooLargeError(file, limit, "video");
+  Object.assign(err.context, { clientId, compressFailure: reason });
+  reportSendError(err);
   return null;
 }
 
@@ -378,7 +387,7 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
         reportSendError(new SendError(
           "videoTooLong",
           `Video too long: ${probe.durationMs} ms, max ${planned.maxDurationMs} ms`,
-          { fileName: file.name, kind: "video", sizeBytes: file.size, limitBytes: limit, maxDurationMs: planned.maxDurationMs },
+          { fileName: file.name, kind: "video", sizeBytes: file.size, limitBytes: limit, maxDurationMs: planned.maxDurationMs, clientId },
           false,
         ));
         return null;
@@ -476,7 +485,7 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
       return dropCancelled();
     }
     logUpload("compress:fail", clientId, { stage: "prepare", error: describeError(e), agoS: pickedAgoS(file) });
-    return fallBack(file, clientId, limit, "prepare failed");
+    return fallBack(file, clientId, limit, isUnreadableFileError(e) ? "unreadable" : "prepare failed");
   } finally {
     stopProgress?.();
     forget();

@@ -3,15 +3,22 @@ import { computed } from "vue";
 import { useI18n } from "@/shared/lib/i18n";
 import { useVideoCompressions, type CompressionJob } from "../model/video-compression";
 import { usePickedMediaState } from "../model/picked-media";
+import { useBatchItems } from "../model/media-batch";
 
 const { t } = useI18n();
-const { jobs, finished, cancel, cancelQueued } = useVideoCompressions();
+const { jobs: allJobs, finished, cancel } = useVideoCompressions();
 const { prep } = usePickedMediaState();
+const batchItems = useBatchItems();
 
+/** Videos sent on their own; a batch's show in MediaBatchBar. */
+const jobs = computed(() => allJobs.value.filter((j) => !batchItems.value.some((i) => i.id === j.id)));
 /** The job being worked on; the rest wait in one line, not one row each. */
 const active = computed(() => jobs.value.filter((j) => j.stage !== "queued"));
 const waiting = computed(() => jobs.value.length - active.value.length);
 const total = computed(() => finished.value + jobs.value.length);
+const cancelOwnQueued = () => {
+  for (const j of jobs.value) if (j.stage === "queued") void cancel(j.id);
+};
 
 /** "Compressing video 3 of 12… 40%", or a preparing line before that. */
 const label = (job: CompressionJob, i: number): string => {
@@ -73,7 +80,7 @@ const label = (job: CompressionJob, i: number): string => {
         type="button"
         class="rounded-md px-2 py-1 text-xs font-medium opacity-70 hover:opacity-100"
         :aria-label="t('media.compress.cancelQueued')"
-        @click="cancelQueued()"
+        @click="cancelOwnQueued()"
       >
         ✕
       </button>

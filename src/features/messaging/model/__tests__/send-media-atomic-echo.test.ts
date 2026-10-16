@@ -363,6 +363,14 @@ describe("big videos are compressed before the local echo", () => {
     expect(getUploadLog().find((e) => e.e === "video:thumb-fail")?.d).toMatchObject({ code: "NO_FRAME" });
   });
 
+  it("a batch picks the clientId and the room of a send", async () => {
+    const { sendImage } = useMessages();
+    const photo = new File(["jpeg"], "a.jpg", { type: "image/jpeg" });
+    expect(await sendImage(photo, { clientId: "batch-item-1", roomId: "!other:server" })).toBe(true);
+    const [msg] = await db.messages.toArray();
+    expect(msg).toMatchObject({ clientId: "batch-item-1", roomId: "!other:server" });
+  });
+
   it("forwards are not compressed again", async () => {
     let compressed = false;
     nativeStub({ compress: async () => { compressed = true; throw new Error("unexpected"); } });
