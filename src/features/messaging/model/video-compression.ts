@@ -28,6 +28,7 @@ import { reportSendError } from "./send-error-bus";
 import { fetchUploadLimit, tooLargeError } from "./upload-size";
 import { COMPRESS_THRESHOLD_BYTES, planVideoCompression, retryBitrate, shouldCompressVideo } from "./video-compress-plan";
 import { attachFileSource, fileSourceOf, pickedAgoS } from "./picked-media";
+import { onBackground, onForeground } from "@/entities/auth/lib/matrix-reconnect";
 
 export type CompressionStage = "queued" | "copying" | "compressing";
 
@@ -60,6 +61,10 @@ export interface VideoCompressionDeps {
   readOutput: (result: CompressVideoResult, name: string) => Promise<File>;
   deleteCacheFile: (pathOrUri: string) => Promise<void>;
   now: () => number;
+  /** Was the app in the background at any time since `since` (ms)? */
+  wasBackgrounded?: (since: number) => boolean;
+  /** Resolves once the app is in the foreground. */
+  whenForeground?: () => Promise<void>;
 }
 
 export class CompressionCancelled extends Error {
@@ -106,6 +111,18 @@ function blobChunkToBase64(blob: Blob): Promise<string> {
   });
 }
 
+/** App lifecycle for the encoder: Android may stop the hardware codec of
+ *  an app in the background (screen locked), which fails the export. */
+const lifecycle = { armed: false, inBackground: false, lastBackgroundAt: -1 };
+function armLifecycle(): void {
+  if (lifecycle.armed) return;
+  lifecycle.armed = true;
+  onBackground(() => {
+    lifecycle.inBackground = true;
+    lifecycle.lastBackgroundAt = Date.now();
+  });
+  onForeground(() => { lifecycle.inBackground = false; });
+}
 
 const nativeDeps: VideoCompressionDeps = {
   available: isVideoCompressionAvailable,
@@ -151,6 +168,20 @@ const nativeDeps: VideoCompressionDeps = {
     }
   },
   now: () => Date.now(),
+  wasBackgrounded: (since) => {
+    armLifecycle();
+    return lifecycle.inBackground || lifecycle.lastBackgroundAt >= since;
+  },
+  whenForeground: () => {
+    armLifecycle();
+    if (!lifecycle.inBackground) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const off = onForeground(() => {
+        off();
+        resolve();
+      });
+    });
+  },
 };
 
 let deps: VideoCompressionDeps = nativeDeps;
@@ -363,7 +394,10 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
 
     let { videoBitrate } = planned.plan;
     let result: CompressVideoResult | null = null;
+    let retriedAfterBackground = false;
+    if (d === nativeDeps) armLifecycle();
     for (let attempt = 1; attempt <= 2; attempt++) {
+      const encodeStartedAt = d.now();
       if (isCancelled()) throw new CompressionCancelled();
       logUpload("compress:encode", clientId, {
         attempt, durMs: probe.durationMs, inW: probe.width, inH: probe.height,
@@ -380,6 +414,17 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
         });
       } catch (e) {
         if (pluginErrorCode(e) === "CANCELLED" || isCancelled()) throw new CompressionCancelled();
+        // Screen locked mid-encode: the codec may have been taken away.
+        // Once back in the foreground, run the same attempt again (once).
+        if (!retriedAfterBackground && d.wasBackgrounded?.(encodeStartedAt)) {
+          retriedAfterBackground = true;
+          logUpload("compress:retry", clientId, { reason: "background", attempt, code: pluginErrorCode(e), error: describeError(e) });
+          await d.whenForeground?.();
+          if (isCancelled()) throw new CompressionCancelled();
+          patchJob(clientId, { stage: "compressing", percent: 0 });
+          attempt--;
+          continue;
+        }
         logUpload("compress:fail", clientId, { stage: "encode", attempt, code: pluginErrorCode(e), error: describeError(e) });
         await cleanup();
         return fallBack(file, clientId, limit, "encode failed");

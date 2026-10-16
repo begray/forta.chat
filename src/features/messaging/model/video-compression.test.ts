@@ -185,6 +185,37 @@ describe("prepareVideoForSend", () => {
     expect(m.deleted).toContain("video-compress/in-c-fail-fit.mp4");
   });
 
+  it("retries an encode that failed while the app was in the background, once it is back", async () => {
+    const m = makeDeps();
+    const compress = m.deps.compress;
+    let calls = 0;
+    let foreground!: () => void;
+    m.deps.compress = vi.fn(async (o: CompressVideoOptions) => {
+      if (++calls === 1) throw Object.assign(new Error("codec reclaimed"), { code: "FAILED" });
+      return compress(o);
+    });
+    m.deps.wasBackgrounded = () => true;
+    m.deps.whenForeground = () => new Promise<void>((r) => { foreground = r; });
+    setVideoCompressionDepsForTests(m.deps);
+    const run = prepareVideoForSend(fakeVideo(90 * MiB), "c-locked");
+    await vi.waitFor(() => expect(foreground).toBeTypeOf("function"));
+    expect(m.deps.compress).toHaveBeenCalledTimes(1);
+    foreground();
+    expect((await run)?.compressed).toBe(true);
+    expect(m.deps.compress).toHaveBeenCalledTimes(2);
+    expect(events("c-locked")).toContain("compress:retry");
+    expect(events("c-locked")).not.toContain("compress:fail");
+  });
+
+  it("does not retry a failed encode when the app stayed in the foreground", async () => {
+    const m = makeDeps();
+    m.deps.compress = vi.fn(async () => { throw Object.assign(new Error("bad input"), { code: "FAILED" }); });
+    m.deps.wasBackgrounded = () => false;
+    setVideoCompressionDepsForTests(m.deps);
+    expect(await prepareVideoForSend(fakeVideo(90 * MiB), "c-fg")).toBeNull();
+    expect(m.deps.compress).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the too-large banner when compression fails and the original is too big", async () => {
     const m = makeDeps({ probe: async () => { throw Object.assign(new Error("bad"), { code: "PROBE_FAILED" }); } });
     setVideoCompressionDepsForTests(m.deps);
