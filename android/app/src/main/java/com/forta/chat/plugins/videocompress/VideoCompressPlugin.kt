@@ -1,7 +1,9 @@
 package com.forta.chat.plugins.videocompress
 
+import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -27,6 +29,8 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import java.io.File
+import java.io.FileOutputStream
+import java.util.UUID
 
 /**
  * Re-encodes a phone video to H.264/AAC MP4 small enough for the server's
@@ -38,6 +42,10 @@ import java.io.File
  *      audioBitrate = 128000 }) -> { path, uri, size, durationMs, width,
  *      height, videoBitrate }, with "progress" events { id, percent }
  *  - cancel({ id })
+ *  - thumbnail({ path, maxSize = 480, quality = 78 }) -> { path, uri, width,
+ *      height, size, durationMs, videoWidth, videoHeight }: a JPEG frame
+ *      ~1 s in, for the m.video thumbnail, in cacheDir/video-thumbs (the
+ *      caller deletes it once read)
  *
  * `path` is an absolute path, a file:// or a content:// URI. Width/height in
  * results are display dimensions (rotation applied). HDR input is tone-mapped
@@ -253,6 +261,57 @@ class VideoCompressPlugin : Plugin() {
             put("height", result?.displayHeight ?: exportResult.height)
             put("videoBitrate", job.videoBitrate)
         })
+    }
+
+    @PluginMethod
+    fun thumbnail(call: PluginCall) {
+        val path = call.getString("path") ?: return call.reject("path required")
+        val maxSize = (call.getInt("maxSize") ?: VideoThumb.DEFAULT_MAX_SIZE).coerceIn(64, 1280)
+        val quality = (call.getInt("quality") ?: VideoThumb.DEFAULT_QUALITY).coerceIn(30, 95)
+        Thread {
+            val retriever = MediaMetadataRetriever()
+            try {
+                val uri = toUri(path)
+                if (uri.scheme == "file") retriever.setDataSource(uri.path) else retriever.setDataSource(context, uri)
+                fun meta(key: Int) = retriever.extractMetadata(key)
+                val durationMs = meta(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
+                val rotation = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+                val w = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                val h = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                val atUs = VideoThumb.frameTimeUs(durationMs)
+                // Frames come back rotated for display already.
+                val raw = if (Build.VERSION.SDK_INT >= 27) {
+                    retriever.getScaledFrameAtTime(atUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, maxSize, maxSize)
+                } else {
+                    retriever.getFrameAtTime(atUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                } ?: retriever.getFrameAtTime(0)
+                if (raw == null) {
+                    call.reject("No frame in $path", "NO_FRAME")
+                    return@Thread
+                }
+                val (tw, th) = VideoThumb.fitWithin(raw.width, raw.height, maxSize)
+                val frame = if (tw == raw.width && th == raw.height) raw else Bitmap.createScaledBitmap(raw, tw, th, true)
+                if (frame !== raw) raw.recycle()
+                val dir = File(context.cacheDir, "video-thumbs").apply { mkdirs() }
+                val out = File(dir, "thumb-${UUID.randomUUID()}.jpg")
+                FileOutputStream(out).use { frame.compress(Bitmap.CompressFormat.JPEG, quality, it) }
+                frame.recycle()
+                call.resolve(JSObject().apply {
+                    put("path", out.absolutePath)
+                    put("uri", Uri.fromFile(out).toString())
+                    put("width", tw)
+                    put("height", th)
+                    put("size", out.length())
+                    put("durationMs", durationMs)
+                    put("videoWidth", if (rotation % 180 != 0) h else w)
+                    put("videoHeight", if (rotation % 180 != 0) w else h)
+                })
+            } catch (e: Exception) {
+                call.reject("Cannot grab a frame: ${e.message}", "THUMB_FAILED", e)
+            } finally {
+                try { retriever.release() } catch (_: Exception) {}
+            }
+        }.start()
     }
 
     @PluginMethod

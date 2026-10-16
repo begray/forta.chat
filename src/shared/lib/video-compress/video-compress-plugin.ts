@@ -37,6 +37,19 @@ export interface CompressVideoResult {
   videoBitrate: number;
 }
 
+/** A JPEG frame for an m.video thumbnail, in the app cache (delete it once read). */
+export interface VideoThumbnailResult {
+  path: string;
+  uri: string;
+  width: number;
+  height: number;
+  size: number;
+  durationMs: number;
+  /** The video's display size (rotation applied). */
+  videoWidth: number;
+  videoHeight: number;
+}
+
 /** Native contract of android/.../plugins/videocompress/VideoCompressPlugin.kt.
  *  Rejections carry `code`: NOT_VIDEO, PROBE_FAILED, TOO_LONG, FAILED,
  *  CANCELLED, BUSY. There is no iOS/web implementation: callers check
@@ -45,6 +58,8 @@ export interface VideoCompressNativePlugin {
   probe(options: { path: string }): Promise<VideoProbe>;
   compress(options: CompressVideoOptions): Promise<CompressVideoResult>;
   cancel(options: { id: string }): Promise<{ cancelled: boolean }>;
+  /** Rejects with NO_FRAME or THUMB_FAILED. */
+  thumbnail(options: { path: string; maxSize?: number; quality?: number }): Promise<VideoThumbnailResult>;
   addListener(
     event: "progress",
     cb: (data: { id: string; percent: number }) => void,
