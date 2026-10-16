@@ -12,6 +12,7 @@ export type SendErrorKind =
   | "cryptoNotReady"
   | "uploadFailed"
   | "queueStuck"
+  | "batchIncomplete"
   | "unknown";
 
 export interface SendErrorContext {
@@ -23,6 +24,12 @@ export interface SendErrorContext {
   limitBytes?: number;
   /** videoTooLong: the longest video that still fits once compressed. */
   maxDurationMs?: number;
+  /** batchIncomplete: "3 of 19 couldn't be read". */
+  totalCount?: number;
+  failedCount?: number;
+  unreadableCount?: number;
+  /** batchIncomplete: the batch's last individual error, shown after the summary. */
+  detail?: { kind: SendErrorKind; context: SendErrorContext };
 }
 
 export class SendError extends Error {

@@ -6,11 +6,12 @@
  * compressed file exists, and the original never reaches the upload queue.
  * Progress shows in VideoCompressBanner ("Compressing video… 40 %", with X).
  *
- * Phase 1 hands the picked File to the native side by copying it into the
- * app cache in chunks (the <input type=file> gives JS no path). A native
- * picker would skip that copy (see video-compression-progress.md).
+ * A video from the native picker (picked-media.ts) is compressed straight
+ * from its source URI. A File from <input type=file> gives JS no path, so
+ * it is copied into the app cache in chunks first; a batch does that for
+ * all its big videos up front (stageVideoForSend), before any encode.
  */
-import { ref, readonly } from "vue";
+import { ref, readonly, toRaw } from "vue";
 import { Capacitor } from "@capacitor/core";
 import { exceedsUploadLimit, getUploadLimitBytes } from "@/shared/lib/file-transfer/upload-limit";
 import { describeError, fileLabel, logUpload } from "@/shared/lib/upload-log/upload-log";
@@ -25,7 +26,8 @@ import {
 import { SendError } from "./send-errors";
 import { reportSendError } from "./send-error-bus";
 import { fetchUploadLimit, tooLargeError } from "./upload-size";
-import { planVideoCompression, retryBitrate, shouldCompressVideo } from "./video-compress-plan";
+import { COMPRESS_THRESHOLD_BYTES, planVideoCompression, retryBitrate, shouldCompressVideo } from "./video-compress-plan";
+import { attachFileSource, fileSourceOf, pickedAgoS } from "./picked-media";
 
 export type CompressionStage = "queued" | "copying" | "compressing";
 
@@ -72,11 +74,20 @@ const CACHE_DIR = "video-compress";
 
 const jobs = ref<CompressionJob[]>([]);
 const cancelled = new Set<string>();
+/** Files whose compression the user cancelled: not a failed send. */
+const cancelledFiles = new WeakSet<File>();
+/** "Video 3 of 12": jobs finished since the queue was last empty. */
+const finishedInRun = ref(0);
 let chain: Promise<unknown> = Promise.resolve();
 
 /** Active and queued compressions, for the banner. */
 export function useVideoCompressions() {
-  return { jobs: readonly(jobs), cancel: cancelVideoCompression };
+  return { jobs: readonly(jobs), finished: readonly(finishedInRun), cancel: cancelVideoCompression, cancelQueued };
+}
+
+/** Did the user cancel this file's compression (so its send was dropped on purpose)? */
+export function wasCancelledByUser(file: File): boolean {
+  return cancelledFiles.has(toRaw(file));
 }
 
 function patchJob(id: string, patch: Partial<CompressionJob>): void {
@@ -94,6 +105,7 @@ function blobChunkToBase64(blob: Blob): Promise<string> {
     reader.readAsDataURL(blob);
   });
 }
+
 
 const nativeDeps: VideoCompressionDeps = {
   available: isVideoCompressionAvailable,
@@ -148,6 +160,7 @@ export function setVideoCompressionDepsForTests(next: VideoCompressionDeps | nul
   deps = next ?? nativeDeps;
   jobs.value = [];
   cancelled.clear();
+  finishedInRun.value = 0;
   chain = Promise.resolve();
 }
 
@@ -163,9 +176,21 @@ export async function cancelVideoCompression(id: string): Promise<void> {
   }
 }
 
+/** Cancel every compression still waiting its turn (the running one goes on). */
+export async function cancelQueued(): Promise<void> {
+  const queued = jobs.value.filter((j) => j.stage === "queued").map((j) => j.id);
+  await Promise.all(queued.map((id) => cancelVideoCompression(id)));
+}
+
 /** Would a video picked now be compressed rather than refused for its size? */
 export function canCompressVideos(): boolean {
   return deps.available();
+}
+
+/** Native picker: videos up to this size are copied at pick time; bigger
+ *  ones will be compressed and stay on their URI until then. */
+export function pickCopyThreshold(): number {
+  return deps.available() ? Math.min(COMPRESS_THRESHOLD_BYTES, getUploadLimitBytes()) : Number.MAX_SAFE_INTEGER;
 }
 
 /** Will sending this file go through the compressor (limit known now)? */
@@ -202,12 +227,17 @@ function fallBack(file: File, clientId: string, limit: number, reason: string): 
  * file to send, or null when the send must be dropped (cancelled, or too
  * large with no way to shrink it; the banner already says why).
  */
-export function prepareVideoForSend(file: File, clientId: string): Promise<PreparedVideo | null> {
-  if (!(file.type ?? "").startsWith("video/") || !deps.available()) {
-    return Promise.resolve({ file, compressed: false, cleanup: async () => {} });
+export async function prepareVideoForSend(file: File, clientId: string): Promise<PreparedVideo | null> {
+  const passThrough = { file, compressed: false, cleanup: async () => {} };
+  if (!(file.type ?? "").startsWith("video/") || !deps.available()) return passThrough;
+  if (!shouldCompressVideo(file, getUploadLimitBytes())) {
+    // A video that needs no compression must not wait behind the ones that
+    // do: in the standbyfix6 batch, small clips sat in this queue until
+    // their picked File could no longer be read.
+    if (!shouldCompressVideo(file, await deps.uploadLimit())) return passThrough;
   }
   // Show it in the banner while it waits for the one before it.
-  if (shouldCompressVideo(file, getUploadLimitBytes()) && !jobs.value.some((j) => j.id === clientId)) {
+  if (!jobs.value.some((j) => j.id === clientId)) {
     jobs.value = [...jobs.value, { id: clientId, name: file.name, stage: "queued", percent: 0 }];
   }
   // One at a time: phones have few hardware encoder sessions, and parallel
@@ -217,16 +247,48 @@ export function prepareVideoForSend(file: File, clientId: string): Promise<Prepa
   return run;
 }
 
+/**
+ * Web path (<input type=file>, paste, drop): copy a big video into the cache
+ * now, while its File is surely readable, so the compression that runs
+ * later does not depend on it. Resolves false when the video needs no
+ * compression (the caller reads it into memory instead). Throws when the
+ * file cannot be read.
+ */
+export async function stageVideoForSend(file: File): Promise<boolean> {
+  if (fileSourceOf(file)) return true;
+  if (!(file.type ?? "").startsWith("video/") || !deps.available()) return false;
+  if (!shouldCompressVideo(file, await deps.uploadLimit())) return false;
+  const d = deps;
+  const path = `${CACHE_DIR}/in-stage-${d.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}${extensionOf(file)}`;
+  const startedAt = d.now();
+  try {
+    const uri = await d.copyToCache(file, path, () => false);
+    attachFileSource(file, { kind: "staged", uri, release: () => d.deleteCacheFile(path) });
+    logUpload("compress:staged", null, { ms: d.now() - startedAt, size: file.size });
+    return true;
+  } catch (e) {
+    await d.deleteCacheFile(path);
+    throw e;
+  }
+}
+
 async function prepare(file: File, clientId: string): Promise<PreparedVideo | null> {
   const d = deps;
   const forget = () => {
     cancelled.delete(clientId);
+    const before = jobs.value.length;
     jobs.value = jobs.value.filter((j) => j.id !== clientId);
+    if (jobs.value.length === 0) finishedInRun.value = 0;
+    else if (jobs.value.length < before) finishedInRun.value++;
+  };
+  const dropCancelled = () => {
+    cancelledFiles.add(toRaw(file));
+    return null;
   };
   if (cancelled.has(clientId)) {
     logUpload("compress:cancelled", clientId, { stage: "queued" });
     forget();
-    return null;
+    return dropCancelled();
   }
   const limit = await d.uploadLimit();
   if (!shouldCompressVideo(file, limit)) {
@@ -244,14 +306,24 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
   const isCancelled = () => cancelled.has(clientId);
   if (jobs.value.some((j) => j.id === clientId)) patchJob(clientId, { stage: "copying" });
   else jobs.value = [...jobs.value, { id: clientId, name: file.name, stage: "copying", percent: 0 }];
-  logUpload("compress:start", clientId, { size: file.size, limit, mime: file.type, name: fileLabel(file.name) });
+  // A native pick (or a staged web pick) is read from its own source; its
+  // owner releases it. Only a plain picked File is copied here.
+  const source = fileSourceOf(file);
+  logUpload("compress:start", clientId, {
+    size: file.size, limit, mime: file.type, name: fileLabel(file.name), src: source?.kind ?? "webview",
+  });
 
   let stopProgress: (() => void) | null = null;
   try {
-    temp.push(inputPath);
-    const inputUri = await d.copyToCache(file, inputPath, isCancelled);
-    if (isCancelled()) throw new CompressionCancelled();
-    logUpload("compress:copied", clientId, { ms: d.now() - startedAt });
+    let inputUri: string;
+    if (source) {
+      inputUri = source.uri;
+    } else {
+      temp.push(inputPath);
+      inputUri = await d.copyToCache(file, inputPath, isCancelled);
+      if (isCancelled()) throw new CompressionCancelled();
+      logUpload("compress:copied", clientId, { ms: d.now() - startedAt });
+    }
 
     let probe: VideoProbe;
     try {
@@ -330,9 +402,11 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
     }
     if (isCancelled()) throw new CompressionCancelled();
 
-    // The source copy is not needed any more; free the space now.
-    await d.deleteCacheFile(inputPath);
-    temp.splice(temp.indexOf(inputPath), 1);
+    // Our input copy is not needed any more; free the space now.
+    if (!source) {
+      await d.deleteCacheFile(inputPath);
+      temp.splice(temp.indexOf(inputPath), 1);
+    }
 
     const output = await d.readOutput(result, compressedName(file.name));
     logUpload("compress:ok", clientId, {
@@ -344,9 +418,9 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
     await cleanup();
     if (e instanceof CompressionCancelled || isCancelled()) {
       logUpload("compress:cancelled", clientId, { ms: d.now() - startedAt });
-      return null;
+      return dropCancelled();
     }
-    logUpload("compress:fail", clientId, { stage: "prepare", error: describeError(e) });
+    logUpload("compress:fail", clientId, { stage: "prepare", error: describeError(e), agoS: pickedAgoS(file) });
     return fallBack(file, clientId, limit, "prepare failed");
   } finally {
     stopProgress?.();

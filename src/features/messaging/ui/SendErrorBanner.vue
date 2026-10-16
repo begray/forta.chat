@@ -2,33 +2,16 @@
 import { computed } from "vue";
 import { useI18n, type TranslationKey } from "@/shared/lib/i18n";
 import { useSendErrorBus } from "../model/send-error-bus";
-import { sendErrorI18nKey, type SendErrorKind } from "../model/send-errors";
-import { formatFileMegabytes, formatLimitMegabytes } from "@/shared/lib/file-transfer/upload-limit";
+import { sendErrorLabel } from "../model/send-error-label";
 
 const { t } = useI18n();
 const { error, clear } = useSendErrorBus();
 
 const visible = computed(() => error.value !== null);
-// All kinds in SendErrorKind have a matching `errors.send.<kind>` key in en.ts,
-// so the cast is safe — but TranslationKey is a literal-union type and TS
-// cannot derive it from a runtime kind string without the cast.
-const labelKey = computed<TranslationKey>(() =>
-  error.value
-    ? (sendErrorI18nKey(error.value.kind as SendErrorKind) as TranslationKey)
-    : ("errors.send.unknown" as TranslationKey),
+/** "Video is 92.8 MB; the limit is 52 MB", "3 of 19 couldn't be read…". */
+const label = computed(() =>
+  error.value ? sendErrorLabel(error.value, t) : t("errors.send.unknown" as TranslationKey),
 );
-/** "Video is 92.8 MB; the limit is 52 MB" when the sizes are known. */
-const label = computed(() => {
-  const ctx = error.value?.context;
-  if (error.value?.kind === "fileTooLarge" && ctx?.sizeBytes && ctx.limitBytes) {
-    const params = { size: formatFileMegabytes(ctx.sizeBytes), limit: formatLimitMegabytes(ctx.limitBytes) };
-    return ctx.kind === "video" ? t("errors.send.videoTooLargeSized", params) : t("errors.send.fileTooLargeSized", params);
-  }
-  if (error.value?.kind === "videoTooLong" && ctx?.maxDurationMs) {
-    return t("errors.send.videoTooLongSized", { minutes: String(Math.floor(ctx.maxDurationMs / 60_000)) });
-  }
-  return t(labelKey.value);
-});
 const retryable = computed(() => !!error.value?.retry && error.value.retryable);
 
 /** Banner stays open after a retry triggers — the new send will either
