@@ -51,6 +51,15 @@ export interface FileInfo {
   videoNote?: boolean;
   /** Thumbnail URL for video circles */
   thumbnailUrl?: string;
+  /** m.video poster frame (info.thumbnail_file / thumbnail_url). `secrets`
+   *  is set when it is encrypted the same way as the video. */
+  thumbnail?: {
+    url: string;
+    secrets?: { block: number; keys: string; v: number };
+    w?: number;
+    h?: number;
+    mimetype?: string;
+  };
   /** True when the m.audio event is a voice-message recording (MSC3245)
    *  or carries a waveform (legacy bastyon-chat marker). When false, the
    *  audio is a generic file that should render as a file-bubble with a

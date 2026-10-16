@@ -13,6 +13,8 @@ import { tRaw } from "@/shared/lib/i18n";
 import { useToast } from "@/shared/lib/use-toast";
 import { useVideoStatePreservation } from "@/shared/lib/composables/use-video-state-preservation";
 import { formatVideoDuration, extractVideoFrameThumbnail } from "../model/video-thumbnail";
+import { loadVideoPoster } from "../model/video-poster-cache";
+import { displayMediaName } from "../model/media-name";
 import {
   videoPlaybackErrorFromMediaError,
   VIDEO_LOAD_TIMEOUT_MS,
@@ -291,6 +293,23 @@ const videoDurationSeconds = computed(() => {
   return videoMetaDuration.value ?? undefined;
 });
 const videoDurationText = computed(() => formatVideoDuration(videoDurationSeconds.value));
+
+// The poster frame the sender attached to the m.video: shown before the
+// video itself is downloaded (owned by video-poster-cache, never revoked here).
+const videoSentPoster = ref<string | null>(null);
+watch(
+  () => [props.message.id, props.message.fileInfo?.thumbnail?.url] as const,
+  async ([id, thumbUrl]) => {
+    videoSentPoster.value = null;
+    if (props.message.type !== MessageType.video || !thumbUrl) return;
+    const url = await loadVideoPoster(props.message);
+    if (!isBubbleAlive || props.message.id !== id) return;
+    videoSentPoster.value = url;
+  },
+  { immediate: true },
+);
+/** The caption row's name: hidden when it is a UUID / camera auto name. */
+const videoFooterName = computed(() => displayMediaName(props.message.fileInfo?.name) ?? "");
 
 const revokePoster = () => {
   if (videoPosterUrl.value) {
@@ -1151,7 +1170,7 @@ const replyPreviewSender = computed(() => {
             v-if="fileState.objectUrl"
             ref="inlineVideoRef"
             :src="fileState.objectUrl"
-            :poster="videoPosterUrl ?? undefined"
+            :poster="videoPosterUrl ?? videoSentPoster ?? undefined"
             :controls="isVideoPlaying"
             :controlslist="isVideoPlaying ? 'nodownload' : undefined"
             playsinline
@@ -1165,11 +1184,13 @@ const replyPreviewSender = computed(() => {
             @pause="isVideoPlaying = false"
             @ended="isVideoPlaying = false"
           />
-          <div v-else-if="fileState.loading" class="flex h-full w-full items-center justify-center bg-neutral-grad-0">
-            <div class="contain-strict h-8 w-8 animate-spin rounded-full border-2 border-color-bg-ac border-t-transparent" />
+          <div v-else-if="fileState.loading" class="relative flex h-full w-full items-center justify-center bg-neutral-grad-0">
+            <img v-if="videoSentPoster" :src="videoSentPoster" alt="" class="absolute inset-0 h-full w-full object-cover" data-testid="video-sent-poster" />
+            <div class="contain-strict relative h-8 w-8 animate-spin rounded-full border-2 border-color-bg-ac border-t-transparent" />
           </div>
-          <button v-else type="button" class="flex h-full w-full items-center justify-center bg-neutral-grad-0 transition-colors hover:bg-neutral-grad-2" @click="handleVideoAudioLoad">
-            <span class="flex h-14 w-14 items-center justify-center rounded-full bg-color-bg-ac/90 text-white shadow-lg">
+          <button v-else type="button" class="relative flex h-full w-full items-center justify-center bg-neutral-grad-0 transition-colors hover:bg-neutral-grad-2" @click="handleVideoAudioLoad">
+            <img v-if="videoSentPoster" :src="videoSentPoster" alt="" class="absolute inset-0 h-full w-full object-cover" data-testid="video-sent-poster" />
+            <span class="relative flex h-14 w-14 items-center justify-center rounded-full bg-color-bg-ac/90 text-white shadow-lg">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4" /></svg>
             </span>
           </button>
@@ -1255,7 +1276,7 @@ const replyPreviewSender = computed(() => {
           </div>
         </div>
         <div v-if="!message.fileInfo?.caption" class="flex items-center justify-between px-3 py-1.5">
-          <span class="truncate text-xs" :class="props.isOwn ? 'text-white/70' : 'text-text-on-main-bg-color'">{{ message.fileInfo?.name }}</span>
+          <span class="truncate text-xs" :class="props.isOwn ? 'text-white/70' : 'text-text-on-main-bg-color'">{{ videoFooterName }}</span>
           <div v-if="themeStore.showTimestamps" class="flex items-center gap-1" :class="props.isOwn ? 'text-white/60' : 'text-text-on-main-bg-color'">
             <span class="text-[10px]">{{ time }}</span>
             <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />

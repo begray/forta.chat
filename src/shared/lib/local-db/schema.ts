@@ -217,6 +217,19 @@ export interface LocalAttachment {
   encryptionSecrets?: Record<string, unknown>;
   status: "local" | "uploading" | "uploaded" | "failed";
   uploadProgress?: number;       // 0-100
+  /** m.video: a JPEG frame sent as the event's thumbnail. remoteUrl and
+   *  secrets are set once it is uploaded, so a retry does not upload it again. */
+  thumbnail?: VideoThumbnailAttachment;
+}
+
+export interface VideoThumbnailAttachment {
+  blob: Blob;
+  w: number;
+  h: number;
+  mimetype: string;
+  size: number;
+  remoteUrl?: string;
+  secrets?: Record<string, unknown>;
 }
 
 /** Listened voice message marker (persisted locally) */

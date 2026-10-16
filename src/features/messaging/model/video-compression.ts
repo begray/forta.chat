@@ -28,6 +28,7 @@ import { reportSendError } from "./send-error-bus";
 import { fetchUploadLimit, tooLargeError } from "./upload-size";
 import { COMPRESS_THRESHOLD_BYTES, planVideoCompression, retryBitrate, shouldCompressVideo } from "./video-compress-plan";
 import { attachFileSource, fileSourceOf, pickedAgoS } from "./picked-media";
+import type { VideoFacts } from "./video-message";
 import { onBackground, onForeground } from "@/entities/auth/lib/matrix-reconnect";
 
 export type CompressionStage = "queued" | "copying" | "compressing";
@@ -43,6 +44,9 @@ export interface CompressionJob {
 export interface PreparedVideo {
   file: File;
   compressed: boolean;
+  /** Compressed output: where the native side can read it, and its facts. */
+  uri?: string;
+  facts?: VideoFacts;
   /** Delete the temp files; call once the send is persisted or dropped. */
   cleanup: () => Promise<void>;
 }
@@ -458,7 +462,13 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
       ms: d.now() - startedAt, in: file.size, out: output.size,
       w: result.width, h: result.height, durMs: result.durationMs, kbps: Math.round(result.videoBitrate / 1000),
     });
-    return { file: output, compressed: true, cleanup };
+    return {
+      file: output,
+      compressed: true,
+      cleanup,
+      uri: result.uri,
+      facts: { w: result.width, h: result.height, durationMs: result.durationMs },
+    };
   } catch (e) {
     await cleanup();
     if (e instanceof CompressionCancelled || isCancelled()) {

@@ -63,6 +63,7 @@ vi.mock("../send-error-bus", () => ({ reportSendError: h.reportSendError }));
 import { useMessages } from "../use-messages";
 import { sendBatch } from "../send-batch";
 import { cancelVideoCompression, setVideoCompressionDepsForTests, type VideoCompressionDeps } from "../video-compression";
+import { setVideoSendMetaDepsForTests } from "../video-send-meta";
 
 class TestDb extends Dexie {
   messages!: Dexie.Table<LocalMessage, number>;
@@ -121,9 +122,12 @@ beforeEach(async () => {
   // Keep the queue parked: this test is about what the send writes.
   engine.setOnline(false);
   h.kit = { messages, syncEngine: engine, db, rooms: roomRepo, eventWriter: {} };
+  // happy-dom's <video> never loads: no frame unless a test provides one.
+  setVideoSendMetaDepsForTests({ nativeAvailable: () => false, webFrame: async () => null });
 });
 
 afterEach(async () => {
+  setVideoSendMetaDepsForTests(null);
   engine.dispose();
   vi.unstubAllGlobals();
   db.close();
@@ -303,6 +307,60 @@ describe("big videos are compressed before the local echo", () => {
     expect(await sending).toBe(false);
     expect(await counts()).toEqual({ messages: 0, attachments: 0, ops: 0 });
     expect(h.reportSendError).not.toHaveBeenCalled();
+  });
+
+  it("a gallery video goes out as m.video: size, duration, a poster frame, no junk name", async () => {
+    nativeStub();
+    const deletedThumbs: string[] = [];
+    const nativeThumbnail = vi.fn(async (_uri: string) => ({
+      path: "/cache/video-thumbs/thumb-1.jpg", uri: "file:///cache/video-thumbs/thumb-1.jpg",
+      width: 480, height: 270, size: 4, durationMs: 59_990, videoWidth: 1280, videoHeight: 720,
+    }));
+    setVideoSendMetaDepsForTests({
+      nativeAvailable: () => true,
+      nativeThumbnail,
+      readUri: async () => new Blob(["jpeg"], { type: "image/jpeg" }),
+      deleteFile: async (p) => { deletedThumbs.push(p); },
+    });
+    const { sendFile } = useMessages();
+
+    expect(await sendFile(bigVideo(92_782_267))).toBe(true);
+
+    // The frame comes from the compressed output, before it is deleted.
+    expect(nativeThumbnail).toHaveBeenCalledWith("file:///out");
+    expect(deletedThumbs).toEqual(["/cache/video-thumbs/thumb-1.jpg"]);
+    const [op] = await db.pendingOps.toArray();
+    expect(op.payload).toMatchObject({
+      msgtype: "m.video",
+      body: "Video", // "VID_1.mp4" is a camera auto name
+      eventInfo: { mimetype: "video/mp4", size: 12, w: 1280, h: 720, duration: 60_000 },
+    });
+    const [att] = await db.attachments.toArray();
+    expect(att.thumbnail).toMatchObject({ w: 480, h: 270, mimetype: "image/jpeg", size: 4 });
+    const [msg] = await db.messages.toArray();
+    expect(msg.type).toBe("video");
+    expect(msg.fileInfo).toMatchObject({ w: 1280, h: 720, duration: 60 });
+    expect(getUploadLog().some((e) => e.e === "video:meta")).toBe(true);
+  });
+
+  it("a video whose frame cannot be grabbed still goes as m.video, just without a thumbnail", async () => {
+    nativeStub();
+    setVideoSendMetaDepsForTests({
+      nativeAvailable: () => true,
+      nativeThumbnail: async () => { throw Object.assign(new Error("no frame"), { code: "NO_FRAME" }); },
+    });
+    const { sendFile } = useMessages();
+
+    expect(await sendFile(bigVideo(92_782_267), { caption: "Beach!" })).toBe(true);
+
+    const [op] = await db.pendingOps.toArray();
+    expect(op.payload).toMatchObject({
+      msgtype: "m.video",
+      eventInfo: { w: 1280, h: 720, duration: 60_000, caption: "Beach!" },
+    });
+    const [att] = await db.attachments.toArray();
+    expect(att.thumbnail).toBeUndefined();
+    expect(getUploadLog().find((e) => e.e === "video:thumb-fail")?.d).toMatchObject({ code: "NO_FRAME" });
   });
 
   it("forwards are not compressed again", async () => {

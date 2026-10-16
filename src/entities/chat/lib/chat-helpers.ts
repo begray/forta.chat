@@ -150,6 +150,36 @@ function ensureExt(name: string, mime: string): string {
   return `${name}.${ext}`;
 }
 
+/** The poster frame of an m.video event, if it carries one we can show.
+ *  An encrypted one must be Bastyon-encrypted (`secrets.keys`, see
+ *  shared/lib/local-db/video-content.ts); a Matrix AES-CTR thumbnail_file
+ *  from another client is skipped rather than shown as garbage. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function parseVideoThumbnail(info: any): FileInfo["thumbnail"] {
+  if (!info || typeof info !== "object") return undefined;
+  const tinfo = info.thumbnail_info && typeof info.thumbnail_info === "object" ? info.thumbnail_info : {};
+  const dims = {
+    w: typeof tinfo.w === "number" ? tinfo.w : undefined,
+    h: typeof tinfo.h === "number" ? tinfo.h : undefined,
+    mimetype: typeof tinfo.mimetype === "string" ? tinfo.mimetype : undefined,
+  };
+  const file = info.thumbnail_file;
+  if (file && typeof file === "object" && typeof file.url === "string") {
+    const sec = file.secrets;
+    if (!sec || typeof sec !== "object" || !sec.keys) return undefined;
+    return {
+      url: file.url,
+      secrets: { block: sec.block, keys: sec.keys, v: sec.v ?? sec.version ?? 1 },
+      ...dims,
+      mimetype: dims.mimetype ?? (typeof file.mimetype === "string" ? file.mimetype : undefined),
+    };
+  }
+  if (typeof info.thumbnail_url === "string" && info.thumbnail_url) {
+    return { url: info.thumbnail_url, ...dims };
+  }
+  return undefined;
+}
+
 /** Parse file metadata from raw event content.
  *  m.file events: body is JSON string with {name, type, size, url, secrets}
  *                 matrix-client.ts already parses it into content.pbody
@@ -261,6 +291,9 @@ export function parseFileInfo(content: Record<string, unknown>, msgtype: string)
       duration: info?.duration ? Math.round(info.duration / 1000) : undefined,
       videoNote: isVideoNoteInfo(info) ? true : undefined,
       thumbnailUrl: info?.thumbnailUrl ?? undefined,
+      thumbnail: parseVideoThumbnail(info),
+      caption: typeof info?.caption === "string" && info.caption ? info.caption : undefined,
+      captionAbove: info?.captionAbove ?? undefined,
       secrets: info?.secrets ? {
         block: info.secrets.block,
         keys: info.secrets.keys,

@@ -30,6 +30,8 @@ import { checkUploadSize, tooLargeError } from "./upload-size";
 import { prepareVideoForSend } from "./video-compression";
 import { fileSourceOf, pickedAgoS, releaseFileSource } from "./picked-media";
 import { readPickedFile } from "./read-picked-file";
+import { buildVideoSendPayload } from "./video-message";
+import { describeVideoForSend } from "./video-send-meta";
 
 export { readPickedFile };
 
@@ -168,6 +170,13 @@ async function handleUploadCancelled(
   } catch {
     cancellingSet.delete(clientId);
   }
+}
+
+/** Options of sendFile. A caption only applies to videos (m.video). */
+export interface SendFileOptions {
+  forwardedFrom?: { senderId: string; senderName?: string };
+  caption?: string;
+  captionAbove?: boolean;
 }
 
 export function useMessages() {
@@ -430,10 +439,7 @@ export function useMessages() {
    *  it, even when subsequent enqueue fails), false when the call was
    *  silently dropped before any visible side effect (caller can then
    *  preserve the share/forward intent or restore the input). */
-  const sendFile = async (
-    file: File,
-    options: { forwardedFrom?: { senderId: string; senderName?: string } } = {},
-  ): Promise<boolean> => {
+  const sendFile = async (file: File, options: SendFileOptions = {}): Promise<boolean> => {
     // A natively picked file's copy/grant is ours to give back once its
     // bytes are persisted (or the send is dropped).
     try {
@@ -443,10 +449,7 @@ export function useMessages() {
     }
   };
 
-  const sendFileOnce = async (
-    file: File,
-    options: { forwardedFrom?: { senderId: string; senderName?: string } } = {},
-  ): Promise<boolean> => {
+  const sendFileOnce = async (file: File, options: SendFileOptions = {}): Promise<boolean> => {
     sendDiag("file:start", { name: file?.name, size: file?.size });
     const roomId = chatStore.activeRoomId;
     if (!roomId || !file) {
@@ -461,6 +464,9 @@ export function useMessages() {
     // already sent once and go as they are.
     const prepared = options.forwardedFrom ? null : await prepareVideoForSend(file, clientId);
     if (prepared === null && !options.forwardedFrom) return false;
+    // The picked source (copy / URI) of a video sent as it is: the native
+    // side grabs its thumbnail frame there.
+    const pickedSource = fileSourceOf(file);
     if (prepared) file = prepared.file;
     const cleanupPrepared = async () => { await prepared?.cleanup(); };
 
@@ -471,10 +477,23 @@ export function useMessages() {
       return false;
     }
 
-    // readForSend copies the bytes into memory, so the temp files can go.
+    // readForSend copies the bytes into memory, so the temp files can go
+    // (after the video's thumbnail frame was taken from them).
     const readFile = await readForSend(file, clientId, "file");
+    if (!readFile) {
+      await cleanupPrepared();
+      return false;
+    }
+    const isVideo = normalizeMime(resolveMime(readFile)).startsWith("video/");
+    const videoMeta = isVideo
+      ? await describeVideoForSend(readFile, clientId, {
+          uri: prepared?.uri ?? (prepared?.compressed ? undefined : pickedSource?.uri),
+          known: prepared?.facts ?? (pickedSource
+            ? { w: pickedSource.width, h: pickedSource.height, durationMs: pickedSource.durationMs }
+            : undefined),
+        })
+      : null;
     await cleanupPrepared();
-    if (!readFile) return false;
 
     // Android WebView cannot render HEIC; convertHeicToJpeg short-circuits
     // for non-HEIC inputs, so calling it unconditionally is safe and keeps
@@ -511,19 +530,35 @@ export function useMessages() {
       return false;
     }
 
+    // Videos go out as m.video with size, duration and a poster frame
+    // (upstream sent them as m.file: no thumbnail, no length, UUID caption).
+    const video = videoMeta && msgType === MessageType.video
+      ? buildVideoSendPayload(processedFile, mime, videoMeta.facts)
+      : null;
+    const caption = video ? options.caption : undefined;
+    const captionInfo = caption
+      ? { caption, ...(options.captionAbove != null ? { captionAbove: options.captionAbove } : {}) }
+      : {};
+
     // The persisted blob lets SyncEngine.syncSendFile resume after a crash.
     return persistMediaSend("file", {
       message: {
         clientId,
         roomId,
         senderId: authStore.address ?? "",
-        content: processedFile.name,
+        content: caption || processedFile.name,
         type: msgType,
         fileInfo: {
           name: processedFile.name,
           type: mime,
           size: processedFile.size,
           url: localBlobUrl,
+          ...(video ? {
+            w: videoMeta!.facts.w,
+            h: videoMeta!.facts.h,
+            duration: videoMeta!.facts.durationMs ? videoMeta!.facts.durationMs / 1000 : undefined,
+            ...captionInfo,
+          } : {}),
         },
         forwardedFrom: options.forwardedFrom,
         localBlobUrl,
@@ -534,11 +569,13 @@ export function useMessages() {
         mimeType: mime,
         size: processedFile.size,
         localBlob: processedFile,
+        ...(video && videoMeta?.thumbnail ? { thumbnail: videoMeta.thumbnail } : {}),
       },
       payload: {
         fileName: processedFile.name,
         mimeType: mime,
         msgtype: "m.file",
+        ...(video ? { ...video, eventInfo: { ...video.eventInfo, ...captionInfo } } : {}),
         ...(options.forwardedFrom ? { forwardedFrom: options.forwardedFrom } : {}),
       },
     });
@@ -2086,6 +2123,25 @@ export function useMessages() {
             duration: fi.duration ? Math.round(fi.duration * 1000) : undefined,
             videoNote: true,
             [MSC3245_VIDEO_NOTE_KEY]: true,
+            ...(secrets ? { secrets } : {}),
+          },
+        };
+      } else if (localMsg.type === "video") {
+        // Sent as m.video like sendFile does, without the thumbnail (the
+        // inline path has no attachment row to keep it in).
+        const video = buildVideoSendPayload(
+          { name: fi.name, size: fi.size },
+          fi.type,
+          { w: fi.w, h: fi.h, durationMs: fi.duration ? fi.duration * 1000 : undefined },
+        );
+        content = {
+          body: video.body,
+          msgtype: video.msgtype,
+          url,
+          info: {
+            ...video.eventInfo,
+            ...(fi.caption ? { caption: fi.caption } : {}),
+            ...(fi.captionAbove != null ? { captionAbove: fi.captionAbove } : {}),
             ...(secrets ? { secrets } : {}),
           },
         };
