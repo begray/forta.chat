@@ -66,6 +66,7 @@ const toggleCaptionPosition = () => {
             <video
               v-else
               :src="activeFile.previewUrl"
+              :poster="activeFile.posterUrl"
               controls
               class="max-h-full max-w-full"
             />
@@ -82,8 +83,9 @@ const toggleCaptionPosition = () => {
             @click="emit('update:activeIndex', i)"
           >
             <img v-if="f.type === 'image'" :src="f.previewUrl" class="h-full w-full object-cover" />
-            <div v-else class="flex h-full w-full items-center justify-center bg-white/10">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-white"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+            <div v-else class="relative flex h-full w-full items-center justify-center bg-white/10">
+              <img v-if="f.posterUrl" :src="f.posterUrl" class="absolute inset-0 h-full w-full object-cover" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="relative text-white drop-shadow"><polygon points="5 3 19 12 5 21 5 3" /></svg>
             </div>
             <!-- Remove button -->
             <button

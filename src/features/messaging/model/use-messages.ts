@@ -27,6 +27,11 @@ import { optimizeChatImage } from "@/shared/lib/upload-image";
 import { logUpload, logUploadError, fileLabel } from "@/shared/lib/upload-log/upload-log";
 import { APP_MAX_UPLOAD_BYTES } from "@/shared/lib/file-transfer/upload-limit";
 import { checkUploadSize, tooLargeError } from "./upload-size";
+import { prepareVideoForSend } from "./video-compression";
+import { fileSourceOf, pickedAgoS, releaseFileSource } from "./picked-media";
+import { readPickedFile } from "./read-picked-file";
+
+export { readPickedFile };
 
 /** Per-phase media pipeline timeouts. Splitting the old single 5-minute cap
  *  lets us surface phase-specific failures (e.g. crypto hang vs upload stall)
@@ -119,26 +124,8 @@ export async function convertHeicToJpeg(file: File): Promise<File> {
   }
 }
 
-/** Reading a picked file must not hang a send forever: a cloud item the
- *  provider cannot fetch may never settle. 30 s, or 512 KB/s for big files. */
-const FILE_READ_MIN_TIMEOUT_MS = 30_000;
-const FILE_READ_MIN_BYTES_PER_SEC = 512 * 1024;
 /** Image decode (dimensions, downscale) has no timeout of its own. */
 const IMAGE_PREP_TIMEOUT_MS = 20_000;
-
-/** Read a picked File fully into memory before anything is shown.
- *  On Android the picker hands over content:// backed Files that the WebView
- *  reads lazily. A cloud item (e.g. Google Photos) or an expired grant then
- *  failed only when IndexedDB copied the bytes — after the bubble was already
- *  on screen, leaving it "sending" forever. Reading up front turns that into
- *  an immediate error, and the preview and the persisted copy come from
- *  memory instead of the provider. */
-export async function readPickedFile(file: File): Promise<File> {
-  const timeoutMs = Math.max(FILE_READ_MIN_TIMEOUT_MS, (file.size / FILE_READ_MIN_BYTES_PER_SEC) * 1000);
-  const bytes = await withTimeout(file.arrayBuffer(), timeoutMs, "Reading the file");
-  if (bytes.byteLength === 0) throw new Error(`The file is empty (reported size ${file.size})`);
-  return new File([bytes], file.name, { type: file.type, lastModified: file.lastModified });
-}
 
 /** Errors IndexedDB / the WebView raise when a File's bytes cannot be read. */
 function isUnreadableFileError(e: unknown): boolean {
@@ -221,7 +208,12 @@ export function useMessages() {
       logUpload("read:ok", clientId, { ms: Date.now() - startedAt, size: read.size });
       return read;
     } catch (e) {
-      logUploadError("read:fail", clientId, e, { ms: Date.now() - startedAt, size: file.size });
+      logUploadError("read:fail", clientId, e, {
+        ms: Date.now() - startedAt,
+        size: file.size,
+        src: fileSourceOf(file)?.kind ?? "webview",
+        agoS: pickedAgoS(file),
+      });
       console.error("[use-messages] cannot read the picked file:", e);
       reportSendError(new SendError("fileUnreadable", `Cannot read ${file.name}`, { fileName: file.name, kind, cause: e }, false));
       return null;
@@ -442,6 +434,19 @@ export function useMessages() {
     file: File,
     options: { forwardedFrom?: { senderId: string; senderName?: string } } = {},
   ): Promise<boolean> => {
+    // A natively picked file's copy/grant is ours to give back once its
+    // bytes are persisted (or the send is dropped).
+    try {
+      return await sendFileOnce(file, options);
+    } finally {
+      void releaseFileSource(file);
+    }
+  };
+
+  const sendFileOnce = async (
+    file: File,
+    options: { forwardedFrom?: { senderId: string; senderName?: string } } = {},
+  ): Promise<boolean> => {
     sendDiag("file:start", { name: file?.name, size: file?.size });
     const roomId = chatStore.activeRoomId;
     if (!roomId || !file) {
@@ -451,11 +456,24 @@ export function useMessages() {
     const clientId = crypto.randomUUID();
     logUpload("send:start", clientId, { kind: "file", mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
 
+    // Big phone videos are compressed first (Android), so they fit the
+    // server limit; the original never reaches the queue. Forwards were
+    // already sent once and go as they are.
+    const prepared = options.forwardedFrom ? null : await prepareVideoForSend(file, clientId);
+    if (prepared === null && !options.forwardedFrom) return false;
+    if (prepared) file = prepared.file;
+    const cleanupPrepared = async () => { await prepared?.cleanup(); };
+
     // The server's limit (~50 MB on pocketnet), not just the app's 100 MB:
     // a bigger file uploads in full and is then dropped, on every retry.
-    if (!(await checkUploadSize(file, clientId, "file"))) return false;
+    if (!(await checkUploadSize(file, clientId, "file"))) {
+      await cleanupPrepared();
+      return false;
+    }
 
+    // readForSend copies the bytes into memory, so the temp files can go.
     const readFile = await readForSend(file, clientId, "file");
+    await cleanupPrepared();
     if (!readFile) return false;
 
     // Android WebView cannot render HEIC; convertHeicToJpeg short-circuits
@@ -529,6 +547,21 @@ export function useMessages() {
   /** Send an image message (m.image event — compatible with bastyon-chat).
    *  See sendFile for the boolean return contract. */
   const sendImage = async (
+    file: File,
+    options: {
+      caption?: string;
+      captionAbove?: boolean;
+      forwardedFrom?: { senderId: string; senderName?: string };
+    } = {},
+  ): Promise<boolean> => {
+    try {
+      return await sendImageOnce(file, options);
+    } finally {
+      void releaseFileSource(file);
+    }
+  };
+
+  const sendImageOnce = async (
     file: File,
     options: {
       caption?: string;

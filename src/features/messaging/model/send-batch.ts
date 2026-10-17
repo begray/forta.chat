@@ -15,7 +15,7 @@ export async function sendBatch<T>(
   items: readonly T[],
   send: (item: T, index: number) => Promise<boolean>,
   fileNameOf: (item: T) => string,
-): Promise<void> {
+): Promise<PromiseSettledResult<boolean>[]> {
   logUpload("send:batch", null, { n: items.length });
   const results = await Promise.allSettled(items.map((item, i) => send(item, i)));
   results.forEach((result, i) => {
@@ -29,4 +29,5 @@ export async function sendBatch<T>(
         : new SendError("unknown", describeError(result.reason), { fileName, cause: result.reason }),
     );
   });
+  return results;
 }

@@ -62,6 +62,7 @@ vi.mock("../send-error-bus", () => ({ reportSendError: h.reportSendError }));
 
 import { useMessages } from "../use-messages";
 import { sendBatch } from "../send-batch";
+import { cancelVideoCompression, setVideoCompressionDepsForTests, type VideoCompressionDeps } from "../video-compression";
 
 class TestDb extends Dexie {
   messages!: Dexie.Table<LocalMessage, number>;
@@ -233,5 +234,84 @@ describe("files over the server upload limit", () => {
 
     const [op] = await db.pendingOps.toArray();
     expect(op.payload.size).toBe(3);
+  });
+});
+
+describe("big videos are compressed before the local echo", () => {
+  function bigVideo(size: number): File {
+    const file = new File(["mp4"], "VID_1.mov", { type: "video/quicktime" });
+    Object.defineProperty(file, "size", { value: size });
+    return file;
+  }
+
+  function nativeStub(overrides: Partial<VideoCompressionDeps> = {}) {
+    const deleted: string[] = [];
+    const deps: VideoCompressionDeps = {
+      available: () => true,
+      uploadLimit: async () => 50 * 1024 * 1024,
+      probe: async () => ({ durationMs: 60_000, width: 1920, height: 1080, rotation: 0, bitrate: 17_000_000 }),
+      compress: async (o) => ({ path: `/cache/out-${o.id}.mp4`, uri: "file:///out", size: 12, durationMs: 60_000, width: 1280, height: 720, videoBitrate: o.videoBitrate ?? 0 }),
+      cancel: async () => {},
+      onProgress: async () => () => {},
+      copyToCache: async (_f, path) => path,
+      readOutput: async (_r, name) => new File(["compressed!!"], name, { type: "video/mp4" }),
+      deleteCacheFile: async (p) => { deleted.push(p); },
+      now: () => 0,
+      ...overrides,
+    };
+    setVideoCompressionDepsForTests(deps);
+    return { deleted };
+  }
+
+  afterEach(() => setVideoCompressionDepsForTests(null));
+
+  it("a 92.8 MB video is sent as the compressed MP4, never the original", async () => {
+    const { deleted } = nativeStub();
+    const { sendFile } = useMessages();
+
+    expect(await sendFile(bigVideo(92_782_267))).toBe(true);
+
+    const [att] = await db.attachments.toArray();
+    expect(att.size).toBe(12);
+    expect(att.fileName).toBe("VID_1.mp4");
+    expect(att.mimeType).toBe("video/mp4");
+    const [op] = await db.pendingOps.toArray();
+    expect(op.payload.size).toBe(12);
+    expect(h.reportSendError).not.toHaveBeenCalled();
+    expect(deleted.some((p) => p.includes("out-"))).toBe(true);
+    const [msg] = await db.messages.toArray();
+    const events = getUploadLog().filter((e) => e.c === msg.clientId.slice(0, 8)).map((e) => e.e);
+    expect(events.indexOf("compress:ok")).toBeGreaterThan(events.indexOf("send:start"));
+    expect(events.indexOf("echo:ok")).toBeGreaterThan(events.indexOf("compress:ok"));
+  });
+
+  it("cancelling the compression sends nothing and leaves no bubble", async () => {
+    let fail!: (e: unknown) => void;
+    nativeStub({
+      compress: () => new Promise((_, reject) => { fail = reject; }),
+      cancel: async () => fail(Object.assign(new Error("cancelled"), { code: "CANCELLED" })),
+    });
+    const { sendFile } = useMessages();
+
+    const sending = sendFile(bigVideo(80 * 1024 * 1024));
+    await vi.waitFor(() => expect(fail).toBeTypeOf("function"));
+    const startId = getUploadLog().find((e) => e.e === "compress:start")?.c;
+    const job = (await import("../video-compression")).useVideoCompressions().jobs.value[0];
+    expect(job.id.slice(0, 8)).toBe(startId);
+    await cancelVideoCompression(job.id);
+
+    expect(await sending).toBe(false);
+    expect(await counts()).toEqual({ messages: 0, attachments: 0, ops: 0 });
+    expect(h.reportSendError).not.toHaveBeenCalled();
+  });
+
+  it("forwards are not compressed again", async () => {
+    let compressed = false;
+    nativeStub({ compress: async () => { compressed = true; throw new Error("unexpected"); } });
+    const { sendFile } = useMessages();
+    const forwarded = new File(["x".repeat(16)], "fwd.mp4", { type: "video/mp4" });
+    Object.defineProperty(forwarded, "size", { value: 20 * 1024 * 1024 });
+    await sendFile(forwarded, { forwardedFrom: { senderId: "@a:server" } });
+    expect(compressed).toBe(false);
   });
 });

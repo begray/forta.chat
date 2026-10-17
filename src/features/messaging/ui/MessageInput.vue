@@ -10,12 +10,17 @@ import { useI18n } from "@/shared/lib/i18n";
 import { useToast } from "@/shared/lib/use-toast";
 import { useMediaUpload } from "../model/use-media-upload";
 import { usePasteDrop } from "../model/use-paste-drop";
-import { sendBatch } from "../model/send-batch";
+import { sendPickedBatch } from "../model/media-batch";
+import { canPickNatively, fileSourceOf, pickMediaNatively, sweepPickedMedia } from "../model/picked-media";
+import { reportSendError } from "../model/send-error-bus";
+import { SendError } from "../model/send-errors";
 import EmojiPicker from "./EmojiPicker.vue";
 import AttachmentPanel from "./AttachmentPanel.vue";
 import MediaPreview from "./MediaPreview.vue";
 import PollCreator from "./PollCreator.vue";
 import SendErrorBanner from "./SendErrorBanner.vue";
+import VideoCompressBanner from "./VideoCompressBanner.vue";
+import { pickCopyThreshold, willCompressVideo } from "../model/video-compression";
 import { useVoiceRecorder } from "../model/use-voice-recorder";
 import { useVideoCircleRecorder } from "../model/use-video-circle-recorder";
 import { useMentionAutocomplete } from "../model/use-mention-autocomplete";
@@ -57,10 +62,12 @@ const pasteDrop = usePasteDrop({
   onMediaFiles: (files) => mediaUpload.addFiles(files),
   onOtherFiles: async (files) => {
     sending.value = true;
-    try { await sendBatch(files, (file) => sendFile(file), (file) => file.name); }
+    try { await sendPickedBatch(files, (file) => file, (_, file) => file, (file) => sendFile(file)); }
     finally { sending.value = false; }
   },
 });
+// Copies and grants of natively picked media left behind by a killed app.
+void sweepPickedMedia();
 const voiceRecorder = useVoiceRecorder();
 const videoRecorder = useVideoCircleRecorder();
 const isVideoMode = ref(false);
@@ -440,7 +447,34 @@ const toggleAttachmentPanel = () => {
 };
 
 const openFilePicker = () => { fileInputRef.value?.click(); };
-const openPhotoPicker = () => { photoInputRef.value?.click(); };
+/** Gallery button. On Android: the system photo picker through our plugin,
+ *  which settles every item (copy or pinned grant) right after the pick, so
+ *  a long batch cannot lose files whose WebView handles went stale. */
+const openPhotoPicker = async () => {
+  if (!canPickNatively()) {
+    photoInputRef.value?.click();
+    return;
+  }
+  try {
+    const picked = await pickMediaNatively(pickCopyThreshold());
+    if (!picked) return;
+    if (picked.files.length) mediaUpload.addFiles(picked.files);
+    const lost = picked.unreadable.length;
+    if (lost) {
+      const total = lost + picked.files.length;
+      reportSendError(new SendError(
+        total > 1 ? "batchIncomplete" : "fileUnreadable",
+        `${lost} of ${total} picked items could not be read`,
+        { fileName: picked.unreadable[0].name, totalCount: total, failedCount: lost, unreadableCount: lost },
+        false,
+      ));
+    }
+  } catch (e) {
+    // The plugin failed to open the picker: the WebView chooser still works.
+    console.warn("[MessageInput] native picker failed, using the file input:", e);
+    photoInputRef.value?.click();
+  }
+};
 
 const handlePhotoSelect = (e: Event) => {
   const target = e.target as HTMLInputElement;
@@ -454,30 +488,37 @@ const handleFileSelect = async (e: Event) => {
   if (!target.files?.length) return;
   sending.value = true;
   try {
-    // Multi-pick: kick off every send concurrently (see sendBatch).
-    await sendBatch(Array.from(target.files), (file) => sendFile(file), (file) => file.name);
+    // Read every file first, then send them all (see media-batch.ts).
+    await sendPickedBatch(Array.from(target.files), (file) => file, (_, file) => file, (file) => sendFile(file));
   } finally { sending.value = false; target.value = ""; }
 };
 
 const handleMediaSend = async () => {
   if (mediaUpload.files.value.length === 0) return;
   mediaUpload.sending.value = true;
+  const files = [...mediaUpload.files.value];
+  const caption = mediaUpload.caption.value;
+  const captionAbove = mediaUpload.captionAbove.value;
+  // Compressing a video takes a while: close the preview now and show the
+  // progress in the composer (VideoCompressBanner) instead of a frozen
+  // preview. Then the user may pick new media, which must survive.
+  // Native picks close at once too: their previews point at copies that
+  // each send deletes when it is done.
+  const closedEarly = files.some((f) => (f.type === "video" && willCompressVideo(f.file)) || fileSourceOf(f.file));
+  if (closedEarly) mediaUpload.clear({ keepSources: true });
   try {
-    const files = mediaUpload.files.value;
-    // Caption travels on the LAST file so the chat reads as a single
-    // gallery; precompute the index here and dispatch the rest in parallel.
-    const lastIdx = files.length - 1;
-    await sendBatch(
+    // Caption travels on the LAST file sent so the chat reads as a single
+    // gallery; the rest are dispatched in parallel.
+    await sendPickedBatch(
       files,
-      (f, i) => {
-        const captionOpts = i === lastIdx && mediaUpload.caption.value
-          ? { caption: mediaUpload.caption.value, captionAbove: mediaUpload.captionAbove.value }
-          : {};
+      (f) => f.file,
+      (f, file) => ({ ...f, file }),
+      (f, _i, isLast) => {
+        const captionOpts = isLast && caption ? { caption, captionAbove } : {};
         return f.type === "image" ? sendImage(f.file, captionOpts) : sendFile(f.file);
       },
-      (f) => f.file.name,
     );
-  } finally { mediaUpload.clear(); }
+  } finally { if (!closedEarly) mediaUpload.clear({ keepSources: true }); }
 };
 
 const cancelReply = () => { chatStore.replyingTo = null; };
@@ -865,7 +906,7 @@ defineExpose({
   addMediaFiles: (files: File[]) => mediaUpload.addFiles(files),
   sendOtherFiles: async (files: File[]) => {
     sending.value = true;
-    try { await sendBatch(files, (file) => sendFile(file), (file) => file.name); }
+    try { await sendPickedBatch(files, (file) => file, (_, file) => file, (file) => sendFile(file)); }
     finally { sending.value = false; }
   },
 });
@@ -929,6 +970,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
          sendFile/sendImage/sendAudio + voice recorder are routed here via
          the send-error bus so they stop disappearing silently. -->
     <SendErrorBanner />
+    <VideoCompressBanner />
     <!-- Editing bar -->
     <div class="input-bar-grid" :class="{ 'input-bar-grid--open': isEditing }">
       <div class="input-bar-grid-inner">
