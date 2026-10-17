@@ -33,6 +33,18 @@ interface ExtractOptions {
   maxDimension?: number;
 }
 
+/** A frame grabbed from a video, plus what the <video> element learned. */
+export interface GrabbedVideoFrame {
+  blob: Blob;
+  /** Frame size (scaled to maxDimension). */
+  width: number;
+  height: number;
+  /** The video's own display size and duration (seconds, 0 if unknown). */
+  videoWidth: number;
+  videoHeight: number;
+  durationS: number;
+}
+
 /** Extract a first-frame JPEG poster from a video URL and return a blob: URL
  *  to the result. Resolves with `null` (never rejects) on any failure — the
  *  caller falls back to the native HTML5 placeholder.
@@ -43,13 +55,28 @@ export async function extractVideoFrameThumbnail(
   videoUrl: string,
   options: ExtractOptions = {},
 ): Promise<string | null> {
+  const frame = await grabVideoFrame(videoUrl, options);
+  if (!frame) return null;
+  try {
+    return URL.createObjectURL(frame.blob);
+  } catch {
+    return null;
+  }
+}
+
+/** Like extractVideoFrameThumbnail, but resolves the JPEG itself with the
+ *  video's dimensions and duration (the m.video send path on web/iOS). */
+export async function grabVideoFrame(
+  videoUrl: string,
+  options: ExtractOptions = {},
+): Promise<GrabbedVideoFrame | null> {
   const seekSeconds = options.seekSeconds ?? 0.1;
   const quality = options.quality ?? 0.8;
   const maxDimension = options.maxDimension ?? 640;
 
-  return new Promise<string | null>((resolve) => {
+  return new Promise<GrabbedVideoFrame | null>((resolve) => {
     let settled = false;
-    const finish = (value: string | null) => {
+    const finish = (value: GrabbedVideoFrame | null) => {
       if (settled) return;
       settled = true;
       try { video.removeAttribute("src"); } catch { /* ignore */ }
@@ -86,17 +113,14 @@ export async function extractVideoFrameThumbnail(
           return;
         }
         ctx.drawImage(video, 0, 0, w, h);
+        const durationS = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
         canvas.toBlob(
           (blob) => {
             if (!blob) {
               finish(null);
               return;
             }
-            try {
-              finish(URL.createObjectURL(blob));
-            } catch {
-              finish(null);
-            }
+            finish({ blob, width: w, height: h, videoWidth: width, videoHeight: height, durationS });
           },
           "image/jpeg",
           quality,

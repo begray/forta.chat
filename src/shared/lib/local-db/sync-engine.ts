@@ -8,6 +8,7 @@ import { buildTransferMessageBody } from "@/shared/lib/bastyon-link";
 import { withTimeout } from "@/shared/lib/with-timeout";
 import { logUpload, logUploadError } from "@/shared/lib/upload-log/upload-log";
 import { TOO_LARGE_SUSPECT_BYTES, noteUploadTooLarge } from "@/shared/lib/file-transfer/upload-limit";
+import { withVideoThumbnail, type VideoThumbnailRef } from "./video-content";
 
 type GetRoomCryptoFn = (roomId: string) => Promise<PcryptoRoomInstance | undefined>;
 type OnChangeCallback = (roomId: string) => void;
@@ -89,6 +90,8 @@ const MEDIA_ENCRYPT_TIMEOUT_MS = 30_000;
 const MEDIA_UPLOAD_TIMEOUT_MS = 4 * 60_000;
 const MEDIA_UPLOAD_MIN_BYTES_PER_SEC = 50 * 1024;
 const MEDIA_SEND_EVENT_TIMEOUT_MS = 20_000;
+/** A video's poster frame is ~20-60 KB: past this it is sent without one. */
+const THUMBNAIL_UPLOAD_TIMEOUT_MS = 30_000;
 
 /** An upload whose transport reports real progress but whose bytes stopped
  *  moving for this long (app in the foreground) has a dead socket: abort it
@@ -1363,6 +1366,51 @@ export class SyncEngine {
     });
   }
 
+  /** Encrypt (like the video) and upload a video's poster frame. Any
+   *  failure but a user cancel sends the video without one: a missing
+   *  thumbnail must never cost the video itself. */
+  private async uploadVideoThumbnail(
+    clientId: string,
+    attachment: LocalAttachment,
+    roomCrypto: PcryptoRoomInstance | undefined,
+    signal: AbortSignal,
+  ): Promise<VideoThumbnailRef | null> {
+    const thumb = attachment.thumbnail;
+    if (!thumb) return null;
+    const info = { w: thumb.w, h: thumb.h, mimetype: thumb.mimetype, size: thumb.size };
+    if (thumb.remoteUrl) return { url: thumb.remoteUrl, secrets: thumb.secrets, info };
+    const startedAt = Date.now();
+    // Own controller: the timeout must abort this request, not the video's.
+    const own = new AbortController();
+    const onAbort = () => own.abort();
+    signal.addEventListener("abort", onAbort);
+    const timer = setTimeout(() => own.abort(), THUMBNAIL_UPLOAD_TIMEOUT_MS);
+    try {
+      let blob: Blob = thumb.blob;
+      let secrets: Record<string, unknown> | undefined;
+      if (roomCrypto?.canBeEncrypt()) {
+        const encrypted = await withTimeout(roomCrypto.encryptFile(thumb.blob), MEDIA_ENCRYPT_TIMEOUT_MS, "Thumbnail encrypt");
+        blob = encrypted.file;
+        secrets = encrypted.secrets;
+      }
+      const url = await settleUpload(
+        getMatrixClientService().uploadContent(blob, undefined, own.signal),
+        own.signal,
+        2_000,
+      );
+      await this.db.attachments.update(attachment.id!, { thumbnail: { ...thumb, remoteUrl: url, secrets } });
+      logUpload("thumb:ok", clientId, { ms: Date.now() - startedAt, size: blob.size, enc: !!secrets });
+      return { url, secrets, info };
+    } catch (e) {
+      if (signal.aborted) throw new DOMException("Upload cancelled", "AbortError");
+      logUploadError("thumb:fail", clientId, e, { ms: Date.now() - startedAt, timeout: own.signal.aborted || undefined });
+      return null;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
   private async syncSendFile(op: PendingOperation): Promise<void> {
     const payload = op.payload as {
       fileName: string;
@@ -1537,6 +1585,9 @@ export class SyncEngine {
         remoteUrl: url,
       });
 
+      // --- Phase 2b: the video's poster frame (best effort) ----------------
+      const thumbnail = await this.uploadVideoThumbnail(op.clientId, attachment, roomCrypto, controller.signal);
+
       // --- Phase 3: send event (short, just a Matrix PUT) --------------------
       if (controller.signal.aborted) {
         throw new DOMException("Upload cancelled", "AbortError");
@@ -1569,7 +1620,7 @@ export class SyncEngine {
       };
       if (payload.eventInfo) {
         content.info = {
-          ...payload.eventInfo,
+          ...withVideoThumbnail(payload.eventInfo, thumbnail),
           ...(secrets ? { secrets } : {}),
         };
       } else if (secrets) {
@@ -1608,6 +1659,17 @@ export class SyncEngine {
         url,
         ...(secrets
           ? { secrets: secrets as { block: number; keys: string; v: number } }
+          : {}),
+        ...(thumbnail
+          ? {
+              thumbnail: {
+                url: thumbnail.url,
+                secrets: thumbnail.secrets as { block: number; keys: string; v: number } | undefined,
+                w: thumbnail.info.w,
+                h: thumbnail.info.h,
+                mimetype: thumbnail.info.mimetype,
+              },
+            }
           : {}),
       };
       await this.messageRepo.confirmMediaSent(

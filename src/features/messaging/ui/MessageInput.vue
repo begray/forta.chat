@@ -10,7 +10,7 @@ import { useI18n } from "@/shared/lib/i18n";
 import { useToast } from "@/shared/lib/use-toast";
 import { useMediaUpload } from "../model/use-media-upload";
 import { usePasteDrop } from "../model/use-paste-drop";
-import { sendPickedBatch } from "../model/media-batch";
+import { configureMediaBatch, sendPickedBatch } from "../model/media-batch";
 import { canPickNatively, fileSourceOf, pickMediaNatively, sweepPickedMedia } from "../model/picked-media";
 import { reportSendError } from "../model/send-error-bus";
 import { SendError } from "../model/send-errors";
@@ -20,6 +20,7 @@ import MediaPreview from "./MediaPreview.vue";
 import PollCreator from "./PollCreator.vue";
 import SendErrorBanner from "./SendErrorBanner.vue";
 import VideoCompressBanner from "./VideoCompressBanner.vue";
+import MediaBatchBar from "./MediaBatchBar.vue";
 import { pickCopyThreshold, willCompressVideo } from "../model/video-compression";
 import { useVoiceRecorder } from "../model/use-voice-recorder";
 import { useVideoCircleRecorder } from "../model/use-video-circle-recorder";
@@ -56,13 +57,22 @@ const chatStore = useChatStore();
 const themeStore = useThemeStore();
 const { t } = useI18n();
 const { toast } = useToast();
-const { sendMessage, sendFile, sendImage, sendAudio, sendVideoCircle, sendReply, sendForward, forwardMessages, editMessage, setTyping, sendPoll, sendGif } = useMessages();
+const { sendMessage, sendFile, sendImage, sendAudio, sendVideoCircle, sendReply, sendForward, forwardMessages, editMessage, setTyping, sendPoll, sendGif, cancelMediaUploadByClientId, retryMediaByClientId } = useMessages();
+// The batch bar cancels / retries uploads the same way the bubbles do.
+configureMediaBatch({ cancelUpload: cancelMediaUploadByClientId, retryUpload: retryMediaByClientId });
 const mediaUpload = useMediaUpload();
+/** Files sent as files (paperclip > File, paste, drop, share). A batch
+ *  resolves only when it is all through, so the composer does not wait for
+ *  it: the batch bar shows the progress. */
+const sendOtherFiles = async (files: File[]): Promise<void> => {
+  const run = sendPickedBatch(files, (file) => file, (_, file) => file, (file, _i, _last, ctx) => sendFile(file, ctx));
+  if (files.length <= 1) await run;
+};
 const pasteDrop = usePasteDrop({
   onMediaFiles: (files) => mediaUpload.addFiles(files),
   onOtherFiles: async (files) => {
     sending.value = true;
-    try { await sendPickedBatch(files, (file) => file, (_, file) => file, (file) => sendFile(file)); }
+    try { await sendOtherFiles(files); }
     finally { sending.value = false; }
   },
 });
@@ -489,7 +499,7 @@ const handleFileSelect = async (e: Event) => {
   sending.value = true;
   try {
     // Read every file first, then send them all (see media-batch.ts).
-    await sendPickedBatch(Array.from(target.files), (file) => file, (_, file) => file, (file) => sendFile(file));
+    await sendOtherFiles(Array.from(target.files));
   } finally { sending.value = false; target.value = ""; }
 };
 
@@ -504,20 +514,23 @@ const handleMediaSend = async () => {
   // preview. Then the user may pick new media, which must survive.
   // Native picks close at once too: their previews point at copies that
   // each send deletes when it is done.
-  const closedEarly = files.some((f) => (f.type === "video" && willCompressVideo(f.file)) || fileSourceOf(f.file));
+  // A batch shows its progress in MediaBatchBar and resolves only when
+  // every item is through, so its preview closes at once too.
+  const closedEarly = files.length > 1 || files.some((f) => (f.type === "video" && willCompressVideo(f.file)) || fileSourceOf(f.file));
   if (closedEarly) mediaUpload.clear({ keepSources: true });
   try {
     // Caption travels on the LAST file sent so the chat reads as a single
-    // gallery; the rest are dispatched in parallel.
-    await sendPickedBatch(
+    // gallery (images and, as m.video, videos).
+    const run = sendPickedBatch(
       files,
       (f) => f.file,
       (f, file) => ({ ...f, file }),
-      (f, _i, isLast) => {
+      (f, _i, isLast, ctx) => {
         const captionOpts = isLast && caption ? { caption, captionAbove } : {};
-        return f.type === "image" ? sendImage(f.file, captionOpts) : sendFile(f.file);
+        return f.type === "image" ? sendImage(f.file, { ...captionOpts, ...ctx }) : sendFile(f.file, { ...captionOpts, ...ctx });
       },
     );
+    if (files.length <= 1) await run;
   } finally { if (!closedEarly) mediaUpload.clear({ keepSources: true }); }
 };
 
@@ -906,7 +919,7 @@ defineExpose({
   addMediaFiles: (files: File[]) => mediaUpload.addFiles(files),
   sendOtherFiles: async (files: File[]) => {
     sending.value = true;
-    try { await sendPickedBatch(files, (file) => file, (_, file) => file, (file) => sendFile(file)); }
+    try { await sendOtherFiles(files); }
     finally { sending.value = false; }
   },
 });
@@ -970,6 +983,7 @@ const handleKitchenSelect = async (imageUrl: string) => {
          sendFile/sendImage/sendAudio + voice recorder are routed here via
          the send-error bus so they stop disappearing silently. -->
     <SendErrorBanner />
+    <MediaBatchBar :room-id="chatStore.activeRoomId" @pick-again="openPhotoPicker" />
     <VideoCompressBanner />
     <!-- Editing bar -->
     <div class="input-bar-grid" :class="{ 'input-bar-grid--open': isEditing }">

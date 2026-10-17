@@ -28,6 +28,8 @@ import { reportSendError } from "./send-error-bus";
 import { fetchUploadLimit, tooLargeError } from "./upload-size";
 import { COMPRESS_THRESHOLD_BYTES, planVideoCompression, retryBitrate, shouldCompressVideo } from "./video-compress-plan";
 import { attachFileSource, fileSourceOf, pickedAgoS } from "./picked-media";
+import { isUnreadableFileError } from "./read-picked-file";
+import type { VideoFacts } from "./video-message";
 import { onBackground, onForeground } from "@/entities/auth/lib/matrix-reconnect";
 
 export type CompressionStage = "queued" | "copying" | "compressing";
@@ -43,6 +45,9 @@ export interface CompressionJob {
 export interface PreparedVideo {
   file: File;
   compressed: boolean;
+  /** Compressed output: where the native side can read it, and its facts. */
+  uri?: string;
+  facts?: VideoFacts;
   /** Delete the temp files; call once the send is persisted or dropped. */
   cleanup: () => Promise<void>;
 }
@@ -248,7 +253,15 @@ function fallBack(file: File, clientId: string, limit: number, reason: string): 
     return { file, compressed: false, cleanup: async () => {} };
   }
   logUpload("send:dropped", clientId, { reason: `too large (${reason})`, size: file.size, limit });
-  reportSendError(tooLargeError(file, limit, "video"));
+  // Say what really happened: in the standbyfix6 batch the file could not
+  // be read at all, yet the banner blamed its size.
+  if (reason === "unreadable") {
+    reportSendError(new SendError("fileUnreadable", `Cannot read ${file.name}`, { fileName: file.name, kind: "video", clientId }, false));
+    return null;
+  }
+  const err = tooLargeError(file, limit, "video");
+  Object.assign(err.context, { clientId, compressFailure: reason });
+  reportSendError(err);
   return null;
 }
 
@@ -374,7 +387,7 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
         reportSendError(new SendError(
           "videoTooLong",
           `Video too long: ${probe.durationMs} ms, max ${planned.maxDurationMs} ms`,
-          { fileName: file.name, kind: "video", sizeBytes: file.size, limitBytes: limit, maxDurationMs: planned.maxDurationMs },
+          { fileName: file.name, kind: "video", sizeBytes: file.size, limitBytes: limit, maxDurationMs: planned.maxDurationMs, clientId },
           false,
         ));
         return null;
@@ -458,7 +471,13 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
       ms: d.now() - startedAt, in: file.size, out: output.size,
       w: result.width, h: result.height, durMs: result.durationMs, kbps: Math.round(result.videoBitrate / 1000),
     });
-    return { file: output, compressed: true, cleanup };
+    return {
+      file: output,
+      compressed: true,
+      cleanup,
+      uri: result.uri,
+      facts: { w: result.width, h: result.height, durationMs: result.durationMs },
+    };
   } catch (e) {
     await cleanup();
     if (e instanceof CompressionCancelled || isCancelled()) {
@@ -466,7 +485,7 @@ async function prepare(file: File, clientId: string): Promise<PreparedVideo | nu
       return dropCancelled();
     }
     logUpload("compress:fail", clientId, { stage: "prepare", error: describeError(e), agoS: pickedAgoS(file) });
-    return fallBack(file, clientId, limit, "prepare failed");
+    return fallBack(file, clientId, limit, isUnreadableFileError(e) ? "unreadable" : "prepare failed");
   } finally {
     stopProgress?.();
     forget();

@@ -17,6 +17,11 @@ export type SendErrorKind =
 
 export interface SendErrorContext {
   fileName?: string;
+  /** The send it belongs to: a running batch takes it over (send-error-bus). */
+  clientId?: string;
+  /** fileTooLarge for a video: why it was not compressed down ("encode
+   *  failed", "probe failed", ...); unset when compression is unavailable. */
+  compressFailure?: string;
   kind?: "image" | "video" | "audio" | "file";
   cause?: unknown;
   /** fileTooLarge: the file's size and the upload limit, in bytes. */

@@ -9,6 +9,7 @@ export function sendErrorLabel(error: { kind: SendErrorKind; context: SendErrorC
   const ctx = error.context;
   if (error.kind === "fileTooLarge" && ctx.sizeBytes && ctx.limitBytes) {
     const params = { size: formatFileMegabytes(ctx.sizeBytes), limit: formatLimitMegabytes(ctx.limitBytes) };
+    if (ctx.kind === "video" && ctx.compressFailure) return t("errors.send.videoNotCompressedSized", params);
     return ctx.kind === "video" ? t("errors.send.videoTooLargeSized", params) : t("errors.send.fileTooLargeSized", params);
   }
   if (error.kind === "videoTooLong" && ctx.maxDurationMs) {

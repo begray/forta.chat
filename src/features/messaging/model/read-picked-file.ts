@@ -27,3 +27,10 @@ export async function readPickedFile(file: File): Promise<File> {
   if (bytes.byteLength === 0) throw new Error(`The file is empty (reported size ${file.size})`);
   return new File([bytes], file.name, { type: file.type, lastModified: file.lastModified });
 }
+
+/** Errors IndexedDB / the WebView raise when a File's bytes cannot be read. */
+export function isUnreadableFileError(e: unknown): boolean {
+  const name = (e as { name?: string } | null)?.name ?? "";
+  const inner = (e as { inner?: { name?: string } } | null)?.inner?.name ?? "";
+  return [name, inner].some((n) => n === "NotReadableError" || n === "NotFoundError" || n === "UnknownError" || n === "DataCloneError");
+}

@@ -13,6 +13,17 @@ export interface ActiveSendError {
 
 const currentError = ref<ActiveSendError | null>(null);
 let nextId = 1;
+/** Sends whose errors a running batch shows in its own summary instead. */
+const captures = new Map<string, (error: ActiveSendError) => void>();
+
+/** Route errors of the send `clientId` (SendErrorContext.clientId) to
+ *  `handler` instead of the banner. Returns the release function. */
+export function captureSendErrors(clientId: string, handler: (error: ActiveSendError) => void): () => void {
+  captures.set(clientId, handler);
+  return () => {
+    if (captures.get(clientId) === handler) captures.delete(clientId);
+  };
+}
 
 /** Report a failed send so the UI banner can surface it.
  *
@@ -39,6 +50,11 @@ export function reportSendError(
     retry,
     createdAt: Date.now(),
   };
+  const capture = sendErr.context.clientId ? captures.get(sendErr.context.clientId) : undefined;
+  if (capture) {
+    capture(entry);
+    return entry;
+  }
   currentError.value = entry;
   return entry;
 }
@@ -61,4 +77,5 @@ export function useSendErrorBus() {
 export function __resetSendErrorBusForTests(): void {
   currentError.value = null;
   nextId = 1;
+  captures.clear();
 }

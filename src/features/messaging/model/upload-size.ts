@@ -41,7 +41,9 @@ export async function checkUploadSize(
   const limit = await fetchUploadLimit();
   if (!exceedsUploadLimit(file.size, limit)) return true;
   logUpload("send:dropped", clientId, { reason: "too large", size: file.size, limit });
-  reportSendError(tooLargeError(file, limit, kind));
+  const err = tooLargeError(file, limit, kind);
+  err.context.clientId = clientId;
+  reportSendError(err);
   return false;
 }
 
