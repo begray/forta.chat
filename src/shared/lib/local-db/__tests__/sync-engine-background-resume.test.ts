@@ -138,6 +138,17 @@ function hangingUpload(): UploadFn {
     });
 }
 
+/** An upload whose socket died in standby: some bytes went out, then nothing. */
+function stalledUpload(): UploadFn {
+  return (_blob, progress, signal) =>
+    new Promise<string>((_resolve, reject) => {
+      progress?.({ loaded: 1, total: 3 });
+      signal?.addEventListener("abort", () =>
+        reject(new DOMException("The user aborted a request.", "AbortError")),
+      );
+    });
+}
+
 async function messageStatus(db: TestDb, clientId: string) {
   return (await db.messages.where("clientId").equals(clientId).first())?.status;
 }
@@ -177,6 +188,7 @@ describe("SyncEngine — media uploads across app background / resume", () => {
     mockMatrix.uploadContent.mockRejectedValue(new TypeError("Failed to fetch"));
     await seedMediaSend(h.db, "cli_bg", { maxRetries: 1, content: "PHOTO-BYTES" });
 
+    h.engine.noteBackground(); // screen locked; the upload fails in standby
     await h.engine.processQueue();
     await vi.waitFor(async () => expect(await messageStatus(h.db, "cli_bg")).toBe("failed"), { timeout: 15_000 });
 
@@ -195,13 +207,14 @@ describe("SyncEngine — media uploads across app background / resume", () => {
   it("resume restarts an upload that stalled while the screen was locked", async () => {
     h = makeEngine(new TestDb(`resume-stall-${Date.now()}-${Math.random()}`));
     mockMatrix.uploadContent
-      .mockImplementationOnce(hangingUpload())
+      .mockImplementationOnce(stalledUpload())
       .mockResolvedValue("mxc://server/ok");
     await seedMediaSend(h.db, "cli_stall", { maxRetries: 1 });
 
     await h.engine.processQueue();
     await vi.waitFor(() => expect(mockMatrix.uploadContent).toHaveBeenCalledTimes(1));
 
+    h.engine.noteBackground();
     await h.engine.resumeAfterBackground(); // no progress within the grace
 
     await vi.waitFor(async () => expect(await messageStatus(h.db, "cli_stall")).toBe("synced"), { timeout: 5_000 });
@@ -226,6 +239,8 @@ describe("SyncEngine — media uploads across app background / resume", () => {
     await vi.waitFor(() => expect(mockMatrix.uploadContent).toHaveBeenCalledTimes(1));
 
     // The connection survived the freeze: progress arrives after resume.
+    report({ loaded: 0, total: 3 });
+    h.engine.noteBackground();
     await h.engine.resumeAfterBackground();
     await new Promise((r) => setTimeout(r, 5));
     report({ loaded: 1, total: 3 });
@@ -245,6 +260,7 @@ describe("SyncEngine — media uploads across app background / resume", () => {
     await vi.waitFor(async () => expect(await opStatus(h.db, "cli_big")).toBe("failed"), { timeout: 5_000 });
     mockMatrix.uploadContent.mockClear();
 
+    h.engine.noteBackground();
     await h.engine.resumeAfterBackground();
     await new Promise((r) => setTimeout(r, 50));
 
@@ -256,7 +272,7 @@ describe("SyncEngine — media uploads across app background / resume", () => {
     h = makeEngine(new TestDb(`resume-batch-${Date.now()}-${Math.random()}`));
     const uploadedOrder: string[] = [];
     mockMatrix.uploadContent
-      .mockImplementationOnce(hangingUpload())
+      .mockImplementationOnce(stalledUpload())
       .mockImplementation(async (blob) => {
         uploadedOrder.push(await blob.text());
         return "mxc://server/ok";
@@ -266,6 +282,7 @@ describe("SyncEngine — media uploads across app background / resume", () => {
     await h.engine.processQueue();
     await vi.waitFor(() => expect(mockMatrix.uploadContent).toHaveBeenCalledTimes(1));
 
+    h.engine.noteBackground();
     await h.engine.resumeAfterBackground();
 
     await vi.waitFor(async () => expect(await h.db.pendingOps.count()).toBe(0), { timeout: 5_000 });
@@ -334,6 +351,7 @@ describe("SyncEngine — media uploads across app background / resume", () => {
     await h.db.pendingOps.where("clientId").equals("cli_offline").modify({ status: "failed" });
     h.engine.setOnline(false);
 
+    h.engine.noteBackground();
     await h.engine.resumeAfterBackground();
 
     expect(await opStatus(h.db, "cli_offline")).toBe("failed");

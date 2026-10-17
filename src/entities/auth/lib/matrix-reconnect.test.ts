@@ -22,7 +22,7 @@ vi.mock("@capacitor/app", () => ({
   },
 }));
 
-import { armMatrixReconnect, onForeground } from "./matrix-reconnect";
+import { armMatrixReconnect, onBackground, onForeground } from "./matrix-reconnect";
 
 function sources() {
   const net = new Set<(change: { connected: boolean }) => void>();
@@ -173,5 +173,39 @@ describe("onForeground", () => {
     await Promise.resolve();
     expect(native.appListener).toBeNull();
     off();
+  });
+});
+
+describe("onBackground", () => {
+  it("fires when the document turns hidden, not when it turns visible", () => {
+    const cb = vi.fn();
+    let state: DocumentVisibilityState = "visible";
+    const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+    const off = onBackground(cb);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(cb).not.toHaveBeenCalled();
+    state = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(cb).toHaveBeenCalledTimes(1);
+    off();
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(cb).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it("on native also fires when the app stops being active, and removes that listener", async () => {
+    native.enabled = true;
+    const cb = vi.fn();
+    const off = onBackground(cb);
+    await vi.waitFor(() => expect(native.appListener).not.toBeNull());
+    await Promise.resolve();
+    native.appListener!({ isActive: true });
+    expect(cb).not.toHaveBeenCalled();
+    native.appListener!({ isActive: false });
+    expect(cb).toHaveBeenCalledTimes(1);
+    off();
+    expect(native.remove).toHaveBeenCalledTimes(1);
+    native.appListener!({ isActive: false });
+    expect(cb).toHaveBeenCalledTimes(1);
   });
 });

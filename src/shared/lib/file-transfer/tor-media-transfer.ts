@@ -39,7 +39,8 @@ export interface UploadMediaViaTorFileOptions {
   blob: Blob;
   mimeType: string;
   getUploadEndpoint: () => MediaUploadEndpoint;
-  onProgress?: (progress: { loaded: number; total: number }) => void;
+  /** `estimated`: the figure follows the clock, not bytes that left the phone. */
+  onProgress?: (progress: { loaded: number; total: number; estimated?: boolean }) => void;
   signal?: AbortSignal;
 }
 
@@ -130,7 +131,7 @@ export async function uploadMediaViaTorFile(
   const startedAt = Date.now();
   const report = (): void => {
     const percent = estimateTorUploadPercent(handedOverPercent, Date.now() - startedAt, blob.size);
-    onProgress?.({ loaded: Math.round((blob.size * percent) / 100), total: blob.size });
+    onProgress?.({ loaded: Math.round((blob.size * percent) / 100), total: blob.size, estimated: true });
   };
   const ticker = onProgress ? setInterval(report, ESTIMATE_TICK_MS) : null;
 

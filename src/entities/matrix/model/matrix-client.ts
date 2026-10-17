@@ -1182,11 +1182,12 @@ export class MatrixClientService {
   }
 
   /** Upload content to Matrix server.
-   *  @param progressHandler — optional callback receiving { loaded, total }
+   *  @param progressHandler — optional callback receiving { loaded, total };
+   *    `estimated` marks the native Tor upload's time-based figure
    *  @param signal — optional AbortSignal to cancel the upload */
   async uploadContent(
     file: Blob,
-    progressHandler?: (progress: { loaded: number; total: number }) => void,
+    progressHandler?: (progress: { loaded: number; total: number; estimated?: boolean }) => void,
     signal?: AbortSignal,
   ): Promise<string> {
     if (!this.client) throw new Error("Client not initialized");

@@ -67,7 +67,7 @@ import {
   createBackoffRetry,
 } from "../lib";
 import { connectMatrixWithRetry } from "../lib/connect-matrix-with-retry";
-import { armMatrixReconnect, onForeground } from "../lib/matrix-reconnect";
+import { armMatrixReconnect, onBackground, onForeground } from "../lib/matrix-reconnect";
 import { createKeyPair } from "./key-pair";
 import { generateEncryptionKeys, clearEncryptionKeysCache } from "./encryption-keys";
 
@@ -615,7 +615,11 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
       });
       // Screen unlock / app switch back: the phone may have slept through
       // queued uploads without any connectivity transition — restart stalled
-      // uploads and re-arm the ones that failed in the background.
+      // uploads and re-arm the ones that failed in the background. A resume
+      // only counts after a background signal (see noteBackground).
+      const offBackground = onBackground(() => {
+        chatDbKit.syncEngine.noteBackground();
+      });
       const offForeground = onForeground(() => {
         chatDbKit.syncEngine.resumeAfterBackground().catch((e) => {
           console.warn("[auth] SyncEngine resume failed:", e);
@@ -623,6 +627,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
       });
       _connectivityUnsub = () => {
         offConnectivity();
+        offBackground();
         offForeground();
       };
       chatStore.setHelpers(matrixKit.value!, cryptoInstance);

@@ -70,8 +70,24 @@ const SYNCING_LEASE_MS = 6 * 60_000;
  *  per-phase caps lets retries surface phase-specific failures (e.g. crypto
  *  hang vs. upload stall) instead of a generic "timed out" after 5 min. */
 const MEDIA_ENCRYPT_TIMEOUT_MS = 30_000;
+/** Upload deadline floor. The deadline grows with the file at
+ *  MEDIA_UPLOAD_MIN_BYTES_PER_SEC: a fixed 4 minutes failed every video
+ *  bigger than ~25 MB on a slow uplink, attempt after attempt. */
 const MEDIA_UPLOAD_TIMEOUT_MS = 4 * 60_000;
+const MEDIA_UPLOAD_MIN_BYTES_PER_SEC = 50 * 1024;
 const MEDIA_SEND_EVENT_TIMEOUT_MS = 20_000;
+
+/** An upload whose transport reports real progress but whose bytes stopped
+ *  moving for this long (app in the foreground) has a dead socket: abort it
+ *  as a normal, counted failure instead of waiting out the deadline. */
+const UPLOAD_IDLE_TIMEOUT_MS = 90_000;
+/** How often the deadline / idle watch of an in-flight upload runs. */
+const UPLOAD_WATCH_TICK_MS = 5_000;
+
+/** Stalled uploads restarted after a resume without counting a retry, per
+ *  upload. The next stall counts as a normal retry, so a link that keeps
+ *  dying ends as "failed" with a working Retry instead of looping. */
+const MAX_FREE_STALL_RESTARTS = 2;
 
 /** Throttle for upload-progress Dexie writes. A 20MB upload over a slow
  *  link produces hundreds of progress callbacks per second; unthrottled
@@ -79,8 +95,9 @@ const MEDIA_SEND_EVENT_TIMEOUT_MS = 20_000;
  *  the terminal "100%" so the UI never sticks at 97%. */
 const UPLOAD_PROGRESS_WRITE_INTERVAL_MS = 500;
 
-/** Grace after app resume: an in-flight upload that reports no progress
- *  within this window is treated as dead. Android drops the socket while the
+/** Grace after app resume: an in-flight upload that still has bytes to send
+ *  and whose transport reports measured progress, but sends nothing within
+ *  this window, is treated as dead. Android drops the socket while the
  *  screen is locked (Doze), and the XHR then neither progresses nor errors
  *  until the 4-minute MEDIA_UPLOAD_TIMEOUT_MS. Aborting it lets the queue
  *  restart the upload instead of leaving a frozen progress ring after unlock.
@@ -88,13 +105,74 @@ const UPLOAD_PROGRESS_WRITE_INTERVAL_MS = 500;
  *  survived the freeze gets the chance to report progress first. */
 const UPLOAD_STALL_ON_RESUME_MS = 15_000;
 
-/** Visibility and Capacitor appStateChange both fire on one resume; collapse
- *  them into a single resume pass. */
-const RESUME_DEBOUNCE_MS = 2_000;
+/** How long an aborted upload may take to settle before the op moves on.
+ *  XHR rejects at once; the native Tor upload cannot be cancelled, so the
+ *  next attempt waits for it this long instead of racing it for the uplink. */
+const UPLOAD_ABORT_SETTLE_MS = 30_000;
+
+/** Upload progress as transports report it. `estimated` marks a figure that
+ *  follows the clock, not the bytes (native Tor upload): it shows in the UI
+ *  but says nothing about whether the socket is alive. */
+type UploadProgress = { loaded: number; total: number; estimated?: boolean };
+
+/** The network phase of one in-flight upload, as the stall checks see it. */
+interface UploadWatch {
+  controller: AbortController;
+  /** Epoch ms the network phase started (the deadline runs from here). */
+  startedAt: number;
+  /** Deadline / idle watch interval, cleared when the phase ends. */
+  timer: ReturnType<typeof setInterval> | null;
+  /** Bytes the transport reported sent in the current attempt. */
+  loaded: number;
+  total: number;
+  /** Epoch ms of the last measured progress, or of the attempt start. */
+  lastProgressAt: number;
+  /** The transport reported measured progress in this attempt. Without it
+   *  (fetch, an XHR the service worker answers, Tor's estimate) silence says
+   *  nothing about the socket, so the upload is never treated as stalled. */
+  measured: boolean;
+}
+
+/** Bytes still to send and none sent since `since`. Once every byte is out
+ *  the upload is waiting for the server, which reports nothing either. */
+function isUploadStalled(watch: UploadWatch, since: number): boolean {
+  return watch.measured && watch.loaded < watch.total && watch.lastProgressAt <= since;
+}
+
+function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === "AbortError";
+}
+
+/** Resolve or reject with `upload`. Once `signal` aborts, give the transport
+ *  `settleMs` to tear the attempt down, then reject with an AbortError
+ *  anyway so a transport that ignores the signal cannot hold the queue. */
+function settleUpload(upload: Promise<string>, signal: AbortSignal, settleMs: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onAbort = (): void => {
+      timer = setTimeout(() => reject(new DOMException("Upload cancelled", "AbortError")), settleMs);
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    upload.then(
+      (url) => {
+        if (timer !== null) clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) reject(new DOMException("Upload cancelled", "AbortError"));
+        else resolve(url);
+      },
+      (e) => {
+        if (timer !== null) clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        reject(signal.aborted ? new DOMException("Upload cancelled", "AbortError") : e);
+      },
+    );
+  });
+}
 
 function makeThrottledProgress(
   write: (percent: number) => void,
-): (p: { loaded: number; total: number }) => void {
+): (p: UploadProgress) => void {
   let lastWriteAt = 0;
   let lastPercent = -1;
   return (progress) => {
@@ -234,17 +312,29 @@ export class SyncEngine {
    *  its finally block. cancelMediaUpload() signals through this map to
    *  abort a running upload mid-flight. */
   private activeUploads = new Map<string, AbortController>();
-  /** Epoch ms of the last sign of life (upload start or progress) per
-   *  upload in its network phase, keyed by clientId. Read by resumeAfterBackground to find uploads
-   *  that stalled while the app was in the background. */
-  private uploadActivityAt = new Map<string, number>();
+  /** Uploads in their network phase, keyed by clientId. Read by the resume
+   *  stall check and by each upload's deadline / idle watch. */
+  private uploadWatches = new Map<string, UploadWatch>();
   /** clientIds whose upload resumeAfterBackground aborted as stalled. Their
    *  AbortError is a restart, not a user cancel or a transport failure: the op
    *  goes straight back to "pending" without counting a retry. */
   private resumeAborted = new Set<string>();
+  /** Free stall restarts used per clientId (bounded by MAX_FREE_STALL_RESTARTS). */
+  private stallRestarts = new Map<string, number>();
+  /** Why the engine itself aborted an upload (deadline, idle, repeated stall).
+   *  Turns the AbortError into a normal, counted failure with this message. */
+  private uploadAbortReasons = new Map<string, string>();
+  /** Epoch ms the app went to the background; null while in the foreground.
+   *  A resume only counts after a background: the activity also resumes after
+   *  a permission dialog or the file picker, and one unlock fires both
+   *  visibilitychange and appStateChange. */
+  private backgroundedAt: number | null = null;
   private lastResumeAt = 0;
   private stallCheckTimer: ReturnType<typeof setTimeout> | null = null;
   private resumeStallGraceMs: number;
+  private uploadTimeoutMs: number;
+  private uploadIdleTimeoutMs: number;
+  private uploadWatchTickMs: number;
   /** Becomes true the first time setOnline() is called with `true`.
    *  Guards against the "app started offline from a previous session and
    *  wakes up online without ever seeing setOnline(false)" case, where
@@ -259,11 +349,19 @@ export class SyncEngine {
     private roomRepo: RoomRepository,
     getRoomCrypto: GetRoomCryptoFn,
     onChange?: OnChangeCallback,
-    options: { resumeStallGraceMs?: number } = {},
+    options: {
+      resumeStallGraceMs?: number;
+      uploadTimeoutMs?: number;
+      uploadIdleTimeoutMs?: number;
+      uploadWatchTickMs?: number;
+    } = {},
   ) {
     this.getRoomCrypto = getRoomCrypto;
     this.onChange = onChange;
     this.resumeStallGraceMs = options.resumeStallGraceMs ?? UPLOAD_STALL_ON_RESUME_MS;
+    this.uploadTimeoutMs = options.uploadTimeoutMs ?? MEDIA_UPLOAD_TIMEOUT_MS;
+    this.uploadIdleTimeoutMs = options.uploadIdleTimeoutMs ?? UPLOAD_IDLE_TIMEOUT_MS;
+    this.uploadWatchTickMs = options.uploadWatchTickMs ?? UPLOAD_WATCH_TICK_MS;
     this.startWatchdog();
   }
 
@@ -297,6 +395,12 @@ export class SyncEngine {
     }
   }
 
+  /** The app or page went to the background (screen locked, app switched
+   *  away, a system picker on top). Arms the next resumeAfterBackground. */
+  noteBackground(): void {
+    if (this.backgroundedAt === null) this.backgroundedAt = Date.now();
+  }
+
   /**
    * App came back to the foreground (screen unlocked / app switched back).
    *
@@ -304,25 +408,34 @@ export class SyncEngine {
    * `navigator.onLine`, so queued media burn through their retries and land
    * in "failed", and setOnline() never sees an offline→online edge to re-arm
    * them. Resume is treated like a reconnect:
-   *  1. uploads that report no progress within the grace window after resume
-   *     are aborted and restarted (without counting a retry);
-   *  2. failed ops are re-armed, which also kicks the queue — except uploads
-   *     that failed deterministically (413 / auth): resume happens often, and
-   *     re-uploading a too-large video on every unlock would burn data.
-   * Idempotent: the visibility and appStateChange signals of one resume are
-   * collapsed via RESUME_DEBOUNCE_MS.
+   *  1. uploads whose transport measures progress, that still have bytes to
+   *     send and sent none within the grace window after resume, are aborted
+   *     and restarted — free MAX_FREE_STALL_RESTARTS times per upload, then
+   *     as a counted retry, so a link that keeps dying ends as "failed";
+   *  2. ops that failed while the app was in the background are re-armed,
+   *     which also kicks the queue — except uploads that failed
+   *     deterministically (413 / auth). Media that failed in the foreground
+   *     stay failed: re-uploading a video on every app switch burns data.
+   * Only a resume after noteBackground() counts: one unlock fires both
+   * visibilitychange and appStateChange, and the second finds nothing armed.
    */
   async resumeAfterBackground(): Promise<void> {
-    if (this.disposed || !this.online) return;
+    const backgroundedAt = this.backgroundedAt;
+    if (this.disposed || backgroundedAt === null) return;
+    this.backgroundedAt = null;
+    // Offline: setOnline(true) re-arms the failed ops when the network is back.
+    if (!this.online) return;
     const now = Date.now();
-    if (now - this.lastResumeAt < RESUME_DEBOUNCE_MS) return;
     this.lastResumeAt = now;
 
     this.scheduleStallCheck(now);
 
     try {
       await this.retryAllFailed(
-        (op) => !(op.type === "send_file" && op.errorMessage && isUploadFatal(new Error(op.errorMessage))),
+        (op) =>
+          op.type !== "send_file" ||
+          (!(op.errorMessage && isUploadFatal(new Error(op.errorMessage))) &&
+            (op.lastAttemptAt ?? 0) >= backgroundedAt),
       );
     } catch (e) {
       if (this.disposed || isDbClosedError(e)) return;
@@ -331,23 +444,50 @@ export class SyncEngine {
     }
   }
 
-  /** After the resume grace, abort uploads that made no progress since
-   *  `resumedAt`. Only the network phase is tracked in uploadActivityAt —
+  /** After the resume grace, abort uploads that measurably stalled since
+   *  `resumedAt` (see isUploadStalled). Only the network phase is watched —
    *  encryption is CPU-bound and not abortable, so it is left to finish. */
   private scheduleStallCheck(resumedAt: number): void {
     if (this.stallCheckTimer !== null) clearTimeout(this.stallCheckTimer);
     this.stallCheckTimer = setTimeout(() => {
       this.stallCheckTimer = null;
       if (this.disposed) return;
-      for (const [clientId, lastActivity] of this.uploadActivityAt) {
-        if (lastActivity > resumedAt) continue;
-        const controller = this.activeUploads.get(clientId);
-        if (!controller) continue;
-        console.info(`[SyncEngine] resume: restarting stalled upload ${clientId}`);
-        this.resumeAborted.add(clientId);
-        controller.abort();
+      for (const [clientId, watch] of this.uploadWatches) {
+        if (!isUploadStalled(watch, resumedAt) || watch.controller.signal.aborted) continue;
+        const used = this.stallRestarts.get(clientId) ?? 0;
+        if (used < MAX_FREE_STALL_RESTARTS) {
+          console.info(`[SyncEngine] resume: restarting stalled upload ${clientId} (${used + 1}/${MAX_FREE_STALL_RESTARTS})`);
+          this.stallRestarts.set(clientId, used + 1);
+          this.resumeAborted.add(clientId);
+        } else {
+          console.info(`[SyncEngine] resume: upload ${clientId} stalled again, counting a retry`);
+          this.uploadAbortReasons.set(clientId, "Upload stalled after the app resumed");
+        }
+        watch.controller.abort();
       }
     }, this.resumeStallGraceMs);
+  }
+
+  /** Deadline and foreground idle check of one upload, every tick. */
+  private checkUploadWatch(clientId: string, watch: UploadWatch, deadlineAt: number): void {
+    if (this.disposed || watch.controller.signal.aborted) return;
+    const now = Date.now();
+    let reason: string | null = null;
+    if (now >= deadlineAt) {
+      reason = `Media upload timed out after ${Math.round((deadlineAt - watch.startedAt) / 1000)}s`;
+    } else if (
+      this.backgroundedAt === null &&
+      isUploadStalled(watch, now - this.uploadIdleTimeoutMs) &&
+      this.lastResumeAt <= now - this.uploadIdleTimeoutMs
+    ) {
+      // In the background the resume check owns stalls; right after a
+      // resume its grace runs first.
+      reason = `Upload stalled: no bytes sent for ${Math.round(this.uploadIdleTimeoutMs / 1000)}s`;
+    }
+    if (reason === null) return;
+    console.info(`[SyncEngine] aborting upload ${clientId}: ${reason}`);
+    this.uploadAbortReasons.set(clientId, reason);
+    watch.controller.abort();
   }
 
   /**
@@ -487,6 +627,10 @@ export class SyncEngine {
     if (this.stallCheckTimer !== null) {
       clearTimeout(this.stallCheckTimer);
       this.stallCheckTimer = null;
+    }
+    for (const watch of this.uploadWatches.values()) {
+      if (watch.timer !== null) clearInterval(watch.timer);
+      watch.timer = null;
     }
     this.scheduled = false;
   }
@@ -741,6 +885,7 @@ export class SyncEngine {
     try {
       await this.executeOperation(op);
       this.resumeAborted.delete(op.clientId);
+      this.stallRestarts.delete(op.clientId);
       // If dispose() was called while the send was in flight, skip writing
       // to a DB we no longer own. The send itself already landed server-side;
       // the next engine instance will reconcile via Matrix sync.
@@ -1076,30 +1221,64 @@ export class SyncEngine {
         // fire-and-forget; progress is advisory and must not stall upload
         void this.messageRepo.updateUploadProgress(op.clientId, percent);
       });
-      this.uploadActivityAt.set(op.clientId, Date.now());
-      const onProgress = (p: { loaded: number; total: number }) => {
-        this.uploadActivityAt.set(op.clientId, Date.now());
-        writeProgress(p);
+      const startedAt = Date.now();
+      const watch: UploadWatch = {
+        controller,
+        startedAt,
+        timer: null,
+        loaded: 0,
+        total: fileToUpload.size,
+        lastProgressAt: startedAt,
+        measured: false,
       };
-      // The retry loop sits *inside* the timeout so the deadline covers the
-      // whole upload phase (including in-attempt retries) rather than being
-      // reset between attempts — protects against a runaway 4×4-min loop on
-      // a flaky link.
-      const url = await withTimeout(
-        uploadWithRetry(
-          () =>
-            matrixService.uploadContent(
-              fileToUpload,
-              onProgress,
-              controller.signal,
-            ),
-          controller.signal,
-        ),
-        MEDIA_UPLOAD_TIMEOUT_MS,
-        "Media upload",
+      const onProgress = (p: UploadProgress) => {
+        writeProgress(p);
+        if (p.estimated) return;
+        if (!watch.measured || p.loaded !== watch.loaded) watch.lastProgressAt = Date.now();
+        watch.measured = true;
+        watch.loaded = p.loaded;
+        if (p.total > 0) watch.total = p.total;
+      };
+      // The retry loop sits *inside* the deadline so it covers the whole
+      // upload phase (including in-attempt retries) rather than being reset
+      // between attempts — protects against a runaway loop on a flaky link.
+      // The deadline aborts the upload instead of just rejecting: a timed-out
+      // XHR left running raced the retry for the uplink, so every attempt of
+      // a big video timed out again.
+      const deadlineAt =
+        startedAt +
+        Math.max(this.uploadTimeoutMs, (fileToUpload.size / MEDIA_UPLOAD_MIN_BYTES_PER_SEC) * 1000);
+      this.uploadWatches.set(op.clientId, watch);
+      watch.timer = setInterval(
+        () => this.checkUploadWatch(op.clientId, watch, deadlineAt),
+        this.uploadWatchTickMs,
       );
-      // Network phase over — the short send-event phase is not a stall target.
-      this.uploadActivityAt.delete(op.clientId);
+      let url: string;
+      try {
+        url = await settleUpload(
+          uploadWithRetry(() => {
+            // A fresh in-attempt try starts from zero bytes.
+            watch.loaded = 0;
+            watch.measured = false;
+            watch.lastProgressAt = Date.now();
+            return matrixService.uploadContent(fileToUpload, onProgress, controller.signal);
+          }, controller.signal),
+          controller.signal,
+          UPLOAD_ABORT_SETTLE_MS,
+        );
+      } catch (e) {
+        // The engine aborted it (deadline, idle, repeated stall): a normal,
+        // counted failure. A user cancel or a free resume restart stays an
+        // AbortError.
+        const reason = this.uploadAbortReasons.get(op.clientId);
+        if (reason !== undefined && isAbortError(e)) throw new Error(reason);
+        throw e;
+      } finally {
+        if (watch.timer !== null) clearInterval(watch.timer);
+        watch.timer = null;
+        this.uploadAbortReasons.delete(op.clientId);
+        if (this.uploadWatches.get(op.clientId) === watch) this.uploadWatches.delete(op.clientId);
+      }
 
       await this.db.attachments.update(attachment.id!, {
         status: "uploaded",
@@ -1207,10 +1386,7 @@ export class SyncEngine {
       // Release the controller slot regardless of outcome so a retry can
       // register a fresh one.
       const current = this.activeUploads.get(op.clientId);
-      if (current === controller) {
-        this.activeUploads.delete(op.clientId);
-        this.uploadActivityAt.delete(op.clientId);
-      }
+      if (current === controller) this.activeUploads.delete(op.clientId);
     }
   }
 
@@ -1501,6 +1677,7 @@ export class SyncEngine {
       .filter((o) => o.type === "send_file")
       .first();
     if (!op) return false;
+    this.stallRestarts.delete(clientId);
 
     // Already claimed by a worker: nothing to re-arm, it is uploading.
     if (op.status !== "syncing") {
