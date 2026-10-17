@@ -25,6 +25,8 @@ import { SendError, sendDiag } from "./send-errors";
 import { reportSendError } from "./send-error-bus";
 import { optimizeChatImage } from "@/shared/lib/upload-image";
 import { logUpload, logUploadError, fileLabel } from "@/shared/lib/upload-log/upload-log";
+import { APP_MAX_UPLOAD_BYTES } from "@/shared/lib/file-transfer/upload-limit";
+import { checkUploadSize, tooLargeError } from "./upload-size";
 
 /** Per-phase media pipeline timeouts. Splitting the old single 5-minute cap
  *  lets us surface phase-specific failures (e.g. crypto hang vs upload stall)
@@ -38,8 +40,6 @@ const SEND_EVENT_TIMEOUT_MS = 20_000;
  *  media chain: download+decrypt source blob, encrypt, upload, send. */
 const FORWARD_ITEM_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Max file size for uploads (100 MB — typical Matrix homeserver limit) */
-const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
 
 /** Minimum interval between Dexie writes of upload progress. A large file
  *  (~20MB) over a slow link produces hundreds of progress callbacks per second;
@@ -451,12 +451,9 @@ export function useMessages() {
     const clientId = crypto.randomUUID();
     logUpload("send:start", clientId, { kind: "file", mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
 
-    if (file.size > MAX_UPLOAD_SIZE) {
-      console.warn(`[use-messages] File too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`);
-      logUpload("send:dropped", clientId, { reason: "too large" });
-      reportSendError(new SendError("fileTooLarge", `File too large: ${file.name}`, { fileName: file.name, kind: "file" }, false));
-      return false;
-    }
+    // The server's limit (~50 MB on pocketnet), not just the app's 100 MB:
+    // a bigger file uploads in full and is then dropped, on every retry.
+    if (!(await checkUploadSize(file, clientId, "file"))) return false;
 
     const readFile = await readForSend(file, clientId, "file");
     if (!readFile) return false;
@@ -548,10 +545,9 @@ export function useMessages() {
     const clientId = crypto.randomUUID();
     logUpload("send:start", clientId, { kind: "image", mime: file.type || "(none)", size: file.size, name: fileLabel(file.name) });
 
-    if (file.size > MAX_UPLOAD_SIZE) {
-      console.warn(`[use-messages] Image too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`);
-      logUpload("send:dropped", clientId, { reason: "too large" });
-      reportSendError(new SendError("fileTooLarge", `Image too large: ${file.name}`, { fileName: file.name, kind: "image" }, false));
+    if (file.size > APP_MAX_UPLOAD_BYTES) {
+      logUpload("send:dropped", clientId, { reason: "too large", size: file.size, limit: APP_MAX_UPLOAD_BYTES });
+      reportSendError(tooLargeError(file, APP_MAX_UPLOAD_BYTES, "image"));
       return false;
     }
 
@@ -580,6 +576,9 @@ export function useMessages() {
       reportSendError(new SendError("matrixNotReady", "Matrix client not ready", { fileName: file.name, kind: "image" }));
       return false;
     }
+
+    // Checked after optimizing: a big photo usually shrinks well under the limit.
+    if (!(await checkUploadSize(processedFile, clientId, "image"))) return false;
 
     const dimensions = await withTimeout(getImageDimensions(processedFile), IMAGE_PREP_TIMEOUT_MS, "Image dimensions")
       .catch(() => ({ w: 0, h: 0 }));

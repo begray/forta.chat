@@ -7,6 +7,7 @@ import { ENCRYPTION_REQUIRED_NO_KEYS, type PcryptoRoomInstance } from "@/entitie
 import { buildTransferMessageBody } from "@/shared/lib/bastyon-link";
 import { withTimeout } from "@/shared/lib/with-timeout";
 import { logUpload, logUploadError } from "@/shared/lib/upload-log/upload-log";
+import { TOO_LARGE_SUSPECT_BYTES, noteUploadTooLarge } from "@/shared/lib/file-transfer/upload-limit";
 
 type GetRoomCryptoFn = (roomId: string) => Promise<PcryptoRoomInstance | undefined>;
 type OnChangeCallback = (roomId: string) => void;
@@ -21,6 +22,17 @@ const MIN_BACKOFF_MS = 1_000;
  *  use-file-download: enough overlap to hide one stuck room, small enough not
  *  to saturate CPU/network on low-end Android. */
 const MAX_CONCURRENT_ROOMS = 3;
+
+/** Media uploads that may run at once in one room. A small photo may start
+ *  while a big video in the same room is uploading or waiting out a retry
+ *  backoff, instead of waiting behind it for many minutes. Only media
+ *  overtakes media, and only small items: texts, edits and reactions keep
+ *  strict FIFO, and two big videos never upload (and encrypt in memory) at
+ *  the same time. */
+const MAX_MEDIA_UPLOADS_PER_ROOM = 2;
+/** A send_file op up to this size (payload.size) may overtake media ahead of
+ *  it in its room. */
+const SMALL_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 
 /** Re-check interval while the Matrix client is not ready (boot / re-init).
  *  A claimed send op is released back to "pending" WITHOUT counting a retry
@@ -125,6 +137,32 @@ class AttachmentMissingError extends Error {
   }
 }
 
+/** The server refused the file's size: a 413, or the connection dying right
+ *  after the last byte of a big file (pocketnet's nginx answers a body over
+ *  ~50 MiB with a 502 without CORS headers, which the WebView reports as a
+ *  bare "network error"). Retrying re-sends the whole file for nothing, so
+ *  the op fails at once and the bubble says the file is too large. The
+ *  message keeps "too large", which isUploadFatal matches. */
+export class UploadTooLargeError extends Error {
+  constructor(readonly bytes: number, cause: string) {
+    super(`Upload too large for the server (${bytes} bytes): ${cause}`);
+    this.name = "UploadTooLargeError";
+  }
+}
+
+/** Does this failed try mean the server refused the size? `sent`/`total` are
+ *  the bytes the transport reported for the try. */
+export function classifyTooLarge(err: unknown, sent: number, total: number, bytes: number): UploadTooLargeError | null {
+  if (!(err instanceof Error) || isAbortError(err)) return null;
+  const msg = err.message;
+  if (/status\s*413\b/.test(msg)) return new UploadTooLargeError(bytes, msg);
+  const fullySent = total > 0 && sent >= total;
+  if (!fullySent) return null;
+  if (/status\s*502\b/.test(msg)) return new UploadTooLargeError(bytes, msg);
+  if (bytes >= TOO_LARGE_SUSPECT_BYTES && /network error/i.test(msg)) return new UploadTooLargeError(bytes, msg);
+  return null;
+}
+
 /** Upload progress as transports report it. `estimated` marks a figure that
  *  follows the clock, not the bytes (native Tor upload): it shows in the UI
  *  but says nothing about whether the socket is alive. */
@@ -224,6 +262,7 @@ const UPLOAD_RETRY_DELAYS_MS = [500, 1500, 4000] as const;
  *  retry-immune — retrying just delays the failure UX. */
 function isUploadFatal(err: unknown): boolean {
   if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof UploadTooLargeError) return true;
   if (err instanceof Error) {
     // Matrix media repo returns 413 (payload too large) and 4xx auth/quota
     // failures that are not retryable. We don't have typed errors at this
@@ -288,6 +327,19 @@ async function uploadWithRetry(
   throw lastErr;
 }
 
+/** A send_file op that failed because the server refused the file's size. */
+function isTooLargeOp(op: PendingOperation): boolean {
+  return op.type === "send_file" && (op.errorMessage ?? "").includes("UploadTooLargeError");
+}
+
+/** A send_file op small enough to overtake media ahead of it in its room
+ *  (claimDueOp). Ops written before payload.size existed never overtake. */
+function isSmallUpload(op: PendingOperation): boolean {
+  if (op.type !== "send_file") return false;
+  const size = (op.payload as { size?: unknown }).size;
+  return typeof size === "number" && size <= SMALL_UPLOAD_MAX_BYTES;
+}
+
 function newPendingOp(
   type: PendingOperation["type"],
   roomId: string,
@@ -323,11 +375,16 @@ function newPendingOp(
  */
 export class SyncEngine {
   /** True while the claim loop in processTick is running. Serializes claiming
-   *  (op execution itself runs concurrently per room — see `activeRooms`). */
+   *  (op execution itself runs concurrently — see `activeOps`). */
   private processing = false;
-  /** Rooms with an op currently executing in THIS engine instance. Bounded by
-   *  MAX_CONCURRENT_ROOMS; claimDueOp skips these rooms so per-room FIFO holds. */
-  private activeRooms = new Set<string>();
+  /** Ops currently executing in THIS engine instance, by op id. Bounded by
+   *  MAX_CONCURRENT_ROOMS; claimDueOp counts them as running in their room so
+   *  per-room FIFO holds (small media may overtake, see
+   *  MAX_MEDIA_UPLOADS_PER_ROOM). */
+  private activeOps = new Map<number, PendingOperation>();
+  /** clientIds the user cancelled. Their op is gone; a worker still running
+   *  for one must end quietly: no retry, no "failed" bubble, no event sent. */
+  private cancelledUploads = new Set<string>();
   /** A kick arrived while the claim loop was running. processTick re-runs the
    *  loop once after it finishes so a room freed mid-loop is not stranded
    *  until the watchdog. */
@@ -424,7 +481,9 @@ export class SyncEngine {
       // reset a "syncing" op that's mid-execution). Callers own that ordering:
       // run it before processQueue(), or pass the snapshotStrandedOpIds()
       // whitelist when deferring it past queue start (WEE-97).
-      this.retryAllFailed().catch((e) => {
+      // Not a file the server refused for its size: reconnecting does not
+      // make it smaller, and it would be uploaded in full again.
+      this.retryAllFailed((op) => !isTooLargeOp(op)).catch((e) => {
         console.warn("[SyncEngine] retryAllFailed on reconnect failed:", e);
         this.processQueue();
       });
@@ -646,11 +705,12 @@ export class SyncEngine {
   // ---------------------------------------------------------------------------
 
   /**
-   * Kick the claim loop. Each tick claims due ops — at most one in-flight op
-   * per room, at most MAX_CONCURRENT_ROOMS rooms in parallel (WEE-94) — and
-   * executes them concurrently. Within a room, order is strictly FIFO: only
-   * the room's head op is ever claimed, so a retrying head blocks its own
-   * room (message order is a hard invariant) but never other rooms.
+   * Kick the claim loop. Each tick claims due ops — one in-flight op per
+   * room (two when a small media upload overtakes another upload), at most
+   * MAX_CONCURRENT_ROOMS ops in parallel (WEE-94) — and executes them
+   * concurrently. Within a room, order is FIFO: a retrying head blocks its
+   * own room's texts (message order is a hard invariant) but never other
+   * rooms; only small media may go ahead of media (see claimDueOp).
    *
    * External callers use the public `processQueue()` which is a thin wrapper
    * kicking off the first tick without double-scheduling.
@@ -779,7 +839,7 @@ export class SyncEngine {
         .equals("syncing")
         .filter(
           (op) =>
-            !this.activeRooms.has(op.roomId) &&
+            !this.activeOps.has(op.id!) &&
             (op.lastAttemptAt ?? op.createdAt ?? 0) <= cutoff,
         )
         .toArray();
@@ -836,8 +896,8 @@ export class SyncEngine {
   }
 
   /**
-   * Claim loop (WEE-94): claim due ops from distinct rooms until either no
-   * claimable op remains or MAX_CONCURRENT_ROOMS workers are in flight.
+   * Claim loop (WEE-94): claim due ops until either no claimable op remains
+   * or MAX_CONCURRENT_ROOMS workers are in flight.
    * Each claimed op is executed concurrently via runClaimedOp; its completion
    * frees the room and kicks the scheduler again.
    */
@@ -852,7 +912,7 @@ export class SyncEngine {
       while (
         !this.disposed &&
         this.online &&
-        this.activeRooms.size < MAX_CONCURRENT_ROOMS
+        this.activeOps.size < MAX_CONCURRENT_ROOMS
       ) {
         // Claim the head op of a free room transactionally so concurrent
         // engines (multi-tab) can't both pick the same record.
@@ -865,11 +925,12 @@ export class SyncEngine {
           break;
         }
 
-        this.activeRooms.add(op.roomId);
+        this.activeOps.set(op.id!, op);
         // Deliberately NOT awaited — rooms run in parallel. Errors are fully
         // handled inside runClaimedOp; the finally here only frees the slot.
         void this.runClaimedOp(op).finally(() => {
-          this.activeRooms.delete(op.roomId);
+          this.activeOps.delete(op.id!);
+          this.cancelledUploads.delete(op.clientId);
           // Re-check the queue: this room is free again, and the op may have
           // scheduled a retry whose wake-up needs (re)computing.
           this.kickScheduler(0);
@@ -957,10 +1018,18 @@ export class SyncEngine {
     }
 
     const isUpload = op.type === "send_file";
-    if (isUpload) logUpload("op:claim", op.clientId, { op: op.id, attempt: op.retries + 1, of: op.maxRetries });
+    if (isUpload) {
+      logUpload("op:claim", op.clientId, {
+        op: op.id,
+        attempt: op.retries + 1,
+        of: op.maxRetries,
+        running: this.activeOps.size,
+      });
+    }
     try {
       await this.executeOperation(op);
       if (isUpload) logUpload("state:sent", op.clientId);
+      this.cancelledUploads.delete(op.clientId);
       this.resumeAborted.delete(op.clientId);
       this.stallRestarts.delete(op.clientId);
       // If dispose() was called while the send was in flight, skip writing
@@ -972,6 +1041,20 @@ export class SyncEngine {
     } catch (e) {
       const restartedOnResume = this.resumeAborted.delete(op.clientId);
       if (this.disposed) return;
+
+      // The user cancelled: their op is already deleted and the bubble is
+      // being removed. Retrying, or marking it failed, would bring it back.
+      if (isUpload && this.cancelledUploads.delete(op.clientId)) {
+        logUpload("op:cancelled", op.clientId, { op: op.id });
+        try {
+          await this.db.pendingOps.delete(op.id!);
+        } catch (deleteErr) {
+          if (this.disposed || isDbClosedError(deleteErr)) return;
+          throw deleteErr;
+        }
+        this.onChange?.(op.roomId);
+        return;
+      }
 
       try {
         // Race guard: Matrix may have accepted the event server-side even
@@ -999,6 +1082,27 @@ export class SyncEngine {
             .where("clientId")
             .equals(op.clientId)
             .modify({ uploadError: "file_lost", uploadProgress: undefined });
+          this.onChange?.(op.roomId);
+          return;
+        }
+
+        // The server refuses the file's size: every retry would upload the
+        // whole file again. Fail now; resume / reconnect do not re-arm it
+        // (isUploadFatal), and the bubble says why.
+        if (e instanceof UploadTooLargeError) {
+          logUpload("state:too-large", op.clientId, { size: e.bytes });
+          noteUploadTooLarge(e.bytes);
+          await this.db.pendingOps.update(op.id!, {
+            status: "failed",
+            retries: op.maxRetries,
+            errorMessage: String(e),
+            lastAttemptAt: Date.now(),
+          });
+          await this.markMessageFailed(op);
+          await this.db.messages
+            .where("clientId")
+            .equals(op.clientId)
+            .modify({ uploadError: "too_large", uploadProgress: undefined });
           this.onChange?.(op.roomId);
           return;
         }
@@ -1047,20 +1151,26 @@ export class SyncEngine {
 
   /**
    * Atomically claim the next claimable op (WEE-94). An op is claimable when
-   * it is the HEAD of its room's queue (first pending op of the room in
-   * creation order — FIFO within a room is a hard invariant), it is due
-   * (nextAttemptAt <= now), and its room is busy in neither this engine
-   * (`activeRooms`) nor any other tab (a "syncing" op of the same room).
+   * it is due (nextAttemptAt <= now) and either
+   *  - it is the HEAD of its room's queue (first pending op of the room in
+   *    creation order) and nothing of its room runs, in this engine
+   *    (`activeOps`) or in any other tab (a "syncing" op of the room); or
+   *  - it is a small media upload and everything ahead of it in the room
+   *    (running or pending) is media too, with fewer than
+   *    MAX_MEDIA_UPLOADS_PER_ROOM uploads running there. A photo sent after
+   *    a big video then goes out while the video uploads or waits out its
+   *    backoff, instead of after it. Texts, edits and reactions keep strict
+   *    FIFO: they never overtake, and nothing overtakes them.
    * Returns null if nothing is claimable.
    *
    * The whole select-and-mark runs in one rw-transaction on pendingOps, same
    * as before — concurrent engines (multi-tab) can't both claim the same
-   * record, and a room claimed by another tab is excluded via its "syncing"
-   * marker row, so two tabs can't run the same room out of order either.
+   * record, and ops another tab runs are seen through their "syncing" rows,
+   * so two tabs follow the same rules for a room.
    *
    * Iteration walks the "status" index, whose entries within one status value
    * are ordered by primary key (`++id` = creation order), and stops at the
-   * first claimable head. The realistic outbound queue is tiny (tens of ops);
+   * first claimable op. The realistic outbound queue is tiny (tens of ops);
    * the previous O(log n) single-op lookup via [status+nextAttemptAt] cannot
    * express "head per room", so a short ordered walk replaces it.
    */
@@ -1068,31 +1178,47 @@ export class SyncEngine {
     return this.db.transaction("rw", this.db.pendingOps, async () => {
       const now = Date.now();
 
-      // Rooms with an op currently in flight somewhere (this tab marks ops
-      // "syncing" too, but activeRooms is checked as well to close the gap
-      // between transaction commit and the worker registering the room).
-      const busyRooms = new Set<string>(this.activeRooms);
+      // Ops running per room. This tab marks its ops "syncing" too, but
+      // activeOps is read as well to close the gap between a worker writing
+      // its outcome and leaving activeOps.
+      const running = new Map<string, Map<number, PendingOperation>>();
+      const addRunning = (op: PendingOperation): void => {
+        let ops = running.get(op.roomId);
+        if (!ops) running.set(op.roomId, (ops = new Map()));
+        ops.set(op.id!, op);
+      };
+      for (const op of this.activeOps.values()) addRunning(op);
       await this.db.pendingOps
         .where("status")
         .equals("syncing")
-        .each((op) => {
-          busyRooms.add(op.roomId);
-        });
+        .each(addRunning);
 
-      // Walk pending ops in creation order; the first op seen for a room is
-      // that room's head. Only a due head of a free room may be claimed.
-      const seenRooms = new Set<string>();
+      // Walk pending ops in creation order, tracking what is queued ahead of
+      // each op in its room.
+      const ahead = new Map<string, { onlyMedia: boolean }>();
       let claimed: PendingOperation | null = null;
       await this.db.pendingOps
         .where("status")
         .equals("pending")
         .until(() => claimed !== null)
         .each((op) => {
-          if (claimed || seenRooms.has(op.roomId)) return;
-          seenRooms.add(op.roomId);
-          if (busyRooms.has(op.roomId)) return;
-          if ((op.nextAttemptAt ?? 0) > now) return; // head not due → room waits
-          claimed = op;
+          if (claimed || this.activeOps.has(op.id!)) return;
+          const roomRunning = running.get(op.roomId);
+          const queuedAhead = ahead.get(op.roomId);
+          ahead.set(op.roomId, { onlyMedia: (queuedAhead?.onlyMedia ?? true) && op.type === "send_file" });
+          if ((op.nextAttemptAt ?? 0) > now) return; // not due
+          if (!roomRunning?.size && !queuedAhead) {
+            claimed = op; // the room's head, room idle
+            return;
+          }
+          if (
+            isSmallUpload(op) &&
+            (queuedAhead?.onlyMedia ?? true) &&
+            (roomRunning?.size ?? 0) < MAX_MEDIA_UPLOADS_PER_ROOM &&
+            [...(roomRunning?.values() ?? [])].every((r) => r.type === "send_file")
+          ) {
+            claimed = op;
+          }
         });
 
       if (!claimed) return null;
@@ -1275,6 +1401,8 @@ export class SyncEngine {
     // can interrupt the in-flight fetch.
     const controller = new AbortController();
     this.activeUploads.set(op.clientId, controller);
+    // Cancelled between the claim and here: nothing could be aborted yet.
+    if (this.cancelledUploads.has(op.clientId)) controller.abort();
 
     try {
       if (controller.signal.aborted) {
@@ -1380,6 +1508,8 @@ export class SyncEngine {
             if (++tries > 1) logUpload("upload:try", op.clientId, { n: tries });
             return matrixService.uploadContent(fileToUpload, onProgress, controller.signal).catch((e: unknown) => {
               logUploadError("upload:try-fail", op.clientId, e, { n: tries, sent: watch.loaded });
+              const tooLarge = classifyTooLarge(e, watch.loaded, watch.total, fileToUpload.size);
+              if (tooLarge) throw tooLarge;
               throw e;
             });
           }, controller.signal),
@@ -1754,7 +1884,13 @@ export class SyncEngine {
           status: "local",
         })) as number;
         const opId = (await db.pendingOps.add(
-          newPendingOp("send_file", params.message.roomId, { ...params.payload, attachmentId }, message.clientId),
+          newPendingOp(
+            "send_file",
+            params.message.roomId,
+            // size lets a small item overtake a big upload ahead of it (claimDueOp).
+            { ...params.payload, attachmentId, size: params.attachment.size },
+            message.clientId,
+          ),
         )) as number;
         return { message, attachmentId, opId };
       },
@@ -1848,6 +1984,7 @@ export class SyncEngine {
     }
     const msg = await this.messageRepo.getByClientId(clientId);
     if (msg && !msg.eventId && msg.status !== "synced") {
+      if (msg.uploadError) await this.db.messages.where("clientId").equals(clientId).modify({ uploadError: undefined });
       await this.messageRepo.updateStatus({ clientId }, "pending");
       await this.messageRepo.updateUploadProgress(clientId, 0);
       await this.roomRepo.syncLastMessageLocalStatus(op.roomId, msg.timestamp, "pending");
@@ -1871,7 +2008,11 @@ export class SyncEngine {
    * flipping status to "cancelled" / revoking the preview blob URL.
    */
   async cancelMediaUpload(clientId: string): Promise<void> {
-    logUpload("state:cancelled", clientId, { inFlight: this.activeUploads.has(clientId) });
+    const running = [...this.activeOps.values()].some((op) => op.clientId === clientId && op.type === "send_file");
+    logUpload("state:cancelled", clientId, { inFlight: this.activeUploads.has(clientId), running });
+    // A worker still running this upload must end without a retry (see
+    // processClaimedOp). Marked before the abort, which settles it.
+    if (running) this.cancelledUploads.add(clientId);
     this.activeUploads.get(clientId)?.abort();
     this.activeUploads.delete(clientId);
     // Narrow the delete to send_file ops. clientId is not unique across

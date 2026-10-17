@@ -7,6 +7,7 @@ import { useFileDownload } from "../model/use-file-download";
 import { getMatrixClientService } from "@/entities/matrix";
 import { useLazyLoad } from "@/shared/lib/use-lazy-load";
 import { isMessageFailedForRetry } from "../model/message-failed-state";
+import { exceedsUploadLimit, formatLimitMegabytes, getUploadLimitBytes } from "@/shared/lib/file-transfer/upload-limit";
 import { useBugReport } from "@/features/bug-report";
 import { tRaw } from "@/shared/lib/i18n";
 import { useToast } from "@/shared/lib/use-toast";
@@ -490,6 +491,15 @@ const isUploading = computed(() =>
 const isFailed = computed(() => isMessageFailedForRetry(props.message));
 /** Failed and its local file copy is gone: Retry cannot work. */
 const isFileLost = computed(() => isFailed.value && props.message.uploadError === "file_lost");
+/** Failed because the server refused the file's size. Retry stays only for a
+ *  file under the known limit (the refusal may have been a dropped link). */
+const isTooLarge = computed(() => isFailed.value && props.message.uploadError === "too_large");
+const tooLargeNote = computed(() =>
+  isTooLarge.value ? t("message.tooLarge", { limit: formatLimitMegabytes(getUploadLimitBytes()) }) : "",
+);
+const canRetryUpload = computed(
+  () => !isFileLost.value && !(isTooLarge.value && exceedsUploadLimit(props.message.fileInfo?.size ?? Infinity)),
+);
 
 const fileIcon = computed(() => {
   const type = props.message.fileInfo?.type ?? "";
@@ -1016,7 +1026,8 @@ const replyPreviewSender = computed(() => {
           <!-- Failed overlay with retry -->
           <div v-if="isFailed && hasFileInfo" class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
             <span v-if="isFileLost" class="px-3 text-center text-xs font-medium text-white">{{ t('message.fileLost') }}</span>
-            <button v-else class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
+            <span v-if="isTooLarge" class="px-3 text-center text-xs font-medium text-white">{{ tooLargeNote }}</span>
+            <button v-if="canRetryUpload" class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
               </svg>
@@ -1084,7 +1095,8 @@ const replyPreviewSender = computed(() => {
         </div>
         <div v-if="isFailed && hasFileInfo" class="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-full bg-black/40">
           <span v-if="isFileLost" class="px-3 text-center text-xs font-medium text-white">{{ t('message.fileLost') }}</span>
-          <button v-else class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
+          <span v-if="isTooLarge" class="px-3 text-center text-xs font-medium text-white">{{ tooLargeNote }}</span>
+          <button v-if="canRetryUpload" class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
             </svg>
@@ -1232,7 +1244,8 @@ const replyPreviewSender = computed(() => {
           </div>
           <div v-if="isFailed && hasFileInfo && !videoPlaybackError" class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
             <span v-if="isFileLost" class="px-3 text-center text-xs font-medium text-white">{{ t('message.fileLost') }}</span>
-            <button v-else class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
+            <span v-if="isTooLarge" class="px-3 text-center text-xs font-medium text-white">{{ tooLargeNote }}</span>
+            <button v-if="canRetryUpload" class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
               </svg>
@@ -1335,7 +1348,8 @@ const replyPreviewSender = computed(() => {
         <!-- Failed with retry for audio -->
         <div v-if="isFailed && hasFileInfo" class="mt-1 flex items-center gap-2">
           <span v-if="isFileLost" class="text-xs text-color-bad">{{ t('message.fileLost') }}</span>
-          <button v-else class="text-xs font-medium text-color-bg-ac" @click.stop="emit('retryMedia', message)">{{ t('message.retry') }}</button>
+          <span v-if="isTooLarge" class="text-xs text-color-bad">{{ tooLargeNote }}</span>
+          <button v-if="canRetryUpload" class="text-xs font-medium text-color-bg-ac" @click.stop="emit('retryMedia', message)">{{ t('message.retry') }}</button>
           <button class="text-xs opacity-60" @click.stop="emit('cancelUpload', message)">{{ t('contextMenu.delete') }}</button>
         </div>
         <div v-if="themeStore.showTimestamps" class="mt-1 flex items-center justify-end gap-1" :class="props.isOwn ? 'text-white/60' : 'text-text-on-main-bg-color'">
@@ -1423,7 +1437,8 @@ const replyPreviewSender = computed(() => {
         <!-- Failed with retry for file -->
         <div v-if="isFailed && hasFileInfo" class="mt-1 flex items-center gap-2">
           <span v-if="isFileLost" class="text-xs text-color-bad">{{ t('message.fileLost') }}</span>
-          <button v-else class="text-xs font-medium text-color-bg-ac" @click.stop="emit('retryMedia', message)">{{ t('message.retry') }}</button>
+          <span v-if="isTooLarge" class="text-xs text-color-bad">{{ tooLargeNote }}</span>
+          <button v-if="canRetryUpload" class="text-xs font-medium text-color-bg-ac" @click.stop="emit('retryMedia', message)">{{ t('message.retry') }}</button>
           <button class="text-xs opacity-60" @click.stop="emit('cancelUpload', message)">{{ t('contextMenu.delete') }}</button>
         </div>
         <div v-if="message.fileInfo?.caption" class="mt-1 text-chat-base opacity-90">

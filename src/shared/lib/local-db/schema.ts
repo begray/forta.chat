@@ -154,9 +154,10 @@ export interface LocalMessage {
   uploadPhase?: "encrypting" | "uploading" | "sending_event";
   /** Local blob: URL for instant media preview before upload completes */
   localBlobUrl?: string;
-  /** Set on a failed media send whose file copy is gone: Retry cannot work,
-   *  the user has to pick the file again. */
-  uploadError?: "file_lost";
+  /** Why a failed media send cannot simply be retried: `file_lost` = the file
+   *  copy is gone, pick the file again; `too_large` = the server refused the
+   *  file's size. */
+  uploadError?: "file_lost" | "too_large";
 }
 
 /** Cached user profile */

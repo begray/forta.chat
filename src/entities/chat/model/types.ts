@@ -144,8 +144,9 @@ export interface Message {
   linkPreview?: LinkPreview;
   /** Upload progress 0-100 (only during media upload, undefined when not uploading) */
   uploadProgress?: number;
-  /** Failed media send whose local file copy is gone (Retry cannot work). */
-  uploadError?: "file_lost";
+  /** Failed media send that Retry cannot fix: the local file copy is gone,
+   *  or the server refused the file's size. */
+  uploadError?: "file_lost" | "too_large";
   /** Decryption status — only set for encrypted messages (absence = ok/not encrypted) */
   decryptionStatus?: "pending" | "failed";
   /** Whether this message has been deleted/redacted */
