@@ -1012,13 +1012,14 @@ const replyPreviewSender = computed(() => {
             <div class="contain-strict h-8 w-8 animate-spin rounded-full border-3 border-white border-t-transparent" />
           </div>
           <!-- Failed overlay with retry -->
-          <div v-if="isFailed && hasFileInfo" class="absolute inset-0 flex items-center justify-center bg-black/40">
+          <div v-if="isFailed && hasFileInfo" class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
             <button class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
               </svg>
               <span class="text-xs font-medium">{{ t('message.retry') }}</span>
             </button>
+            <button class="rounded-full bg-black/40 px-2.5 py-0.5 text-[11px] text-white/80" @click.stop="emit('cancelUpload', message)">{{ t('messageList.cancel') }}</button>
           </div>
           <div v-if="themeStore.showTimestamps && !message.fileInfo?.caption" class="absolute bottom-1 right-2 flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5">
             <span class="text-[10px] text-white/90">{{ time }}</span>
@@ -1078,13 +1079,14 @@ const replyPreviewSender = computed(() => {
         <div v-else-if="isSending" class="absolute inset-0 flex items-center justify-center rounded-full bg-black/30">
           <div class="contain-strict h-8 w-8 animate-spin rounded-full border-3 border-white border-t-transparent" />
         </div>
-        <div v-if="isFailed && hasFileInfo" class="absolute inset-0 flex items-center justify-center rounded-full bg-black/40">
+        <div v-if="isFailed && hasFileInfo" class="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-full bg-black/40">
           <button class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
             </svg>
             <span class="text-xs font-medium">{{ t('message.retry') }}</span>
           </button>
+          <button class="rounded-full bg-black/40 px-2.5 py-0.5 text-[11px] text-white/80" @click.stop="emit('cancelUpload', message)">{{ t('messageList.cancel') }}</button>
         </div>
         <!-- Timestamp below the circle -->
         <div v-if="themeStore.showTimestamps" class="mt-1 flex items-center gap-1" :class="props.isOwn ? 'justify-end text-text-on-main-bg-color' : 'text-text-on-main-bg-color'">
@@ -1224,13 +1226,14 @@ const replyPreviewSender = computed(() => {
           <div v-else-if="isSending" class="absolute inset-0 flex items-center justify-center bg-black/30">
             <div class="contain-strict h-8 w-8 animate-spin rounded-full border-3 border-white border-t-transparent" />
           </div>
-          <div v-if="isFailed && hasFileInfo && !videoPlaybackError" class="absolute inset-0 flex items-center justify-center bg-black/40">
+          <div v-if="isFailed && hasFileInfo && !videoPlaybackError" class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
             <button class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
               </svg>
               <span class="text-xs font-medium">{{ t('message.retry') }}</span>
             </button>
+            <button class="rounded-full bg-black/40 px-2.5 py-0.5 text-[11px] text-white/80" @click.stop="emit('cancelUpload', message)">{{ t('messageList.cancel') }}</button>
           </div>
         </div>
         <div v-if="!message.fileInfo?.caption" class="flex items-center justify-between px-3 py-1.5">

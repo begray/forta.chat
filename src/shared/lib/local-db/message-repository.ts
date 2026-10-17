@@ -730,34 +730,95 @@ export class MessageRepository {
     });
   }
 
+  /** All messages with the given status, across rooms. "status" has no
+   *  standalone index — `where("status")` throws SchemaError — so walk the
+   *  distinct [roomId+status] keys (key cursor, no row reads) and fetch only
+   *  the matching pairs. */
+  private async getByStatusAcrossRooms(status: LocalMessageStatus): Promise<LocalMessage[]> {
+    const keys = await this.db.messages.orderBy("[roomId+status]").uniqueKeys();
+    const pairs = keys.filter((k) => Array.isArray(k) && (k as unknown[])[1] === status);
+    if (pairs.length === 0) return [];
+    return this.db.messages.where("[roomId+status]").anyOf(pairs).toArray();
+  }
+
+  /** Newest persisted upload blob for a local message (the `attachments` row
+   *  written by sendFile/sendImage/sendAudio/sendVideoCircle). */
+  async getLocalAttachmentBlob(messageLocalId: number): Promise<Blob | undefined> {
+    const rows = await this.db.attachments
+      .where("messageLocalId")
+      .equals(messageLocalId)
+      .toArray();
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].localBlob) return rows[i].localBlob;
+    }
+    return undefined;
+  }
+
+  /** Re-mint the optimistic preview URL of an unsent media message from its
+   *  persisted blob. blob: URLs die with the document, so after the WebView
+   *  is reloaded (Android kills it in the background) pending/failed media
+   *  rendered as broken images. Returns the new URL, or undefined when no
+   *  blob is stored or object URLs are unavailable. */
+  async restoreLocalBlobUrl(msg: LocalMessage): Promise<string | undefined> {
+    if (msg.localId == null) return undefined;
+    if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return undefined;
+    const blob = await this.getLocalAttachmentBlob(msg.localId);
+    if (!blob) return undefined;
+    const url = URL.createObjectURL(blob);
+    await this.db.messages.update(msg.localId, { localBlobUrl: url });
+    return url;
+  }
+
   /** Recover media messages stuck in "pending" from a previous session.
-   *  Fire-and-forget upload IIFEs are lost on reload/crash — this marks
-   *  orphaned uploads as "failed" so the user sees a retry button instead
-   *  of an infinite spinner.
+   *  Messages whose send_file op is still queued are left alone — SyncEngine
+   *  resumes them from the persisted blob, so flipping them to "failed" would
+   *  offer Retry on uploads that are still in flight. Only orphans (no live
+   *  op) are marked "failed" so the user sees a retry button instead of an
+   *  infinite spinner. Unsent media from the previous session also get their
+   *  dead blob: preview URL re-minted from the persisted blob.
    *  @param maxAgeMs — only recover messages older than this (default 2 min) */
   async recoverStuckMedia(maxAgeMs = 2 * 60 * 1000): Promise<number> {
     const cutoff = Date.now() - maxAgeMs;
-    // Note: "status" has no standalone index (only [roomId+status] compound).
-    // Dexie falls back to a table scan, but this runs once at startup and
-    // the JS filter narrows results quickly — acceptable tradeoff.
-    return this.db.messages
-      .where("status")
-      .equals("pending")
-      .filter((m) => m.uploadProgress !== undefined && m.timestamp < cutoff)
-      .modify({
-        status: "failed" as LocalMessageStatus,
-        uploadProgress: undefined,
-      });
+    const [pending, failed] = await Promise.all([
+      this.getByStatusAcrossRooms("pending"),
+      this.getByStatusAcrossRooms("failed"),
+    ]);
+    const stuck = pending.filter((m) => m.uploadProgress !== undefined && m.timestamp < cutoff);
+
+    const liveOpClientIds = new Set<string>();
+    if (stuck.length > 0) {
+      await this.db.pendingOps
+        .where("clientId")
+        .anyOf(stuck.map((m) => m.clientId))
+        .filter((op) => op.status === "pending" || op.status === "syncing")
+        .each((op) => { liveOpClientIds.add(op.clientId); });
+    }
+    const orphaned = stuck.filter((m) => !liveOpClientIds.has(m.clientId));
+    if (orphaned.length > 0) {
+      await this.db.messages.bulkUpdate(
+        orphaned.map((m) => ({
+          key: m.localId!,
+          changes: { status: "failed" as LocalMessageStatus, uploadProgress: undefined },
+        })),
+      );
+    }
+
+    // Previous-session previews only: a URL minted this session is still valid.
+    const unsentMedia = [...pending, ...failed].filter(
+      (m) => m.localBlobUrl && m.timestamp < cutoff,
+    );
+    for (const m of unsentMedia) {
+      await this.restoreLocalBlobUrl(m);
+    }
+
+    return orphaned.length;
   }
 
   /** Remove cancelled upload messages older than the cutoff (cleanup from previous sessions) */
   async cleanupCancelledUploads(maxAgeMs = 5 * 60 * 1000): Promise<number> {
     const cutoff = Date.now() - maxAgeMs;
-    const cancelled = await this.db.messages
-      .where("status")
-      .equals("cancelled")
-      .filter((m) => m.timestamp < cutoff)
-      .toArray();
+    const cancelled = (await this.getByStatusAcrossRooms("cancelled"))
+      .filter((m) => m.timestamp < cutoff);
 
     if (cancelled.length === 0) return 0;
 

@@ -79,6 +79,19 @@ const MEDIA_SEND_EVENT_TIMEOUT_MS = 20_000;
  *  the terminal "100%" so the UI never sticks at 97%. */
 const UPLOAD_PROGRESS_WRITE_INTERVAL_MS = 500;
 
+/** Grace after app resume: an in-flight upload that reports no progress
+ *  within this window is treated as dead. Android drops the socket while the
+ *  screen is locked (Doze), and the XHR then neither progresses nor errors
+ *  until the 4-minute MEDIA_UPLOAD_TIMEOUT_MS. Aborting it lets the queue
+ *  restart the upload instead of leaving a frozen progress ring after unlock.
+ *  The check runs after the grace, not at resume, so a connection that
+ *  survived the freeze gets the chance to report progress first. */
+const UPLOAD_STALL_ON_RESUME_MS = 15_000;
+
+/** Visibility and Capacitor appStateChange both fire on one resume; collapse
+ *  them into a single resume pass. */
+const RESUME_DEBOUNCE_MS = 2_000;
+
 function makeThrottledProgress(
   write: (percent: number) => void,
 ): (p: { loaded: number; total: number }) => void {
@@ -221,6 +234,17 @@ export class SyncEngine {
    *  its finally block. cancelMediaUpload() signals through this map to
    *  abort a running upload mid-flight. */
   private activeUploads = new Map<string, AbortController>();
+  /** Epoch ms of the last sign of life (upload start or progress) per
+   *  upload in its network phase, keyed by clientId. Read by resumeAfterBackground to find uploads
+   *  that stalled while the app was in the background. */
+  private uploadActivityAt = new Map<string, number>();
+  /** clientIds whose upload resumeAfterBackground aborted as stalled. Their
+   *  AbortError is a restart, not a user cancel or a transport failure: the op
+   *  goes straight back to "pending" without counting a retry. */
+  private resumeAborted = new Set<string>();
+  private lastResumeAt = 0;
+  private stallCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  private resumeStallGraceMs: number;
   /** Becomes true the first time setOnline() is called with `true`.
    *  Guards against the "app started offline from a previous session and
    *  wakes up online without ever seeing setOnline(false)" case, where
@@ -235,9 +259,11 @@ export class SyncEngine {
     private roomRepo: RoomRepository,
     getRoomCrypto: GetRoomCryptoFn,
     onChange?: OnChangeCallback,
+    options: { resumeStallGraceMs?: number } = {},
   ) {
     this.getRoomCrypto = getRoomCrypto;
     this.onChange = onChange;
+    this.resumeStallGraceMs = options.resumeStallGraceMs ?? UPLOAD_STALL_ON_RESUME_MS;
     this.startWatchdog();
   }
 
@@ -269,6 +295,59 @@ export class SyncEngine {
         this.processQueue();
       });
     }
+  }
+
+  /**
+   * App came back to the foreground (screen unlocked / app switched back).
+   *
+   * While the phone sleeps, Android cuts the network without flipping
+   * `navigator.onLine`, so queued media burn through their retries and land
+   * in "failed", and setOnline() never sees an offline→online edge to re-arm
+   * them. Resume is treated like a reconnect:
+   *  1. uploads that report no progress within the grace window after resume
+   *     are aborted and restarted (without counting a retry);
+   *  2. failed ops are re-armed, which also kicks the queue — except uploads
+   *     that failed deterministically (413 / auth): resume happens often, and
+   *     re-uploading a too-large video on every unlock would burn data.
+   * Idempotent: the visibility and appStateChange signals of one resume are
+   * collapsed via RESUME_DEBOUNCE_MS.
+   */
+  async resumeAfterBackground(): Promise<void> {
+    if (this.disposed || !this.online) return;
+    const now = Date.now();
+    if (now - this.lastResumeAt < RESUME_DEBOUNCE_MS) return;
+    this.lastResumeAt = now;
+
+    this.scheduleStallCheck(now);
+
+    try {
+      await this.retryAllFailed(
+        (op) => !(op.type === "send_file" && op.errorMessage && isUploadFatal(new Error(op.errorMessage))),
+      );
+    } catch (e) {
+      if (this.disposed || isDbClosedError(e)) return;
+      console.warn("[SyncEngine] retryAllFailed on resume failed:", e);
+      this.processQueue();
+    }
+  }
+
+  /** After the resume grace, abort uploads that made no progress since
+   *  `resumedAt`. Only the network phase is tracked in uploadActivityAt —
+   *  encryption is CPU-bound and not abortable, so it is left to finish. */
+  private scheduleStallCheck(resumedAt: number): void {
+    if (this.stallCheckTimer !== null) clearTimeout(this.stallCheckTimer);
+    this.stallCheckTimer = setTimeout(() => {
+      this.stallCheckTimer = null;
+      if (this.disposed) return;
+      for (const [clientId, lastActivity] of this.uploadActivityAt) {
+        if (lastActivity > resumedAt) continue;
+        const controller = this.activeUploads.get(clientId);
+        if (!controller) continue;
+        console.info(`[SyncEngine] resume: restarting stalled upload ${clientId}`);
+        this.resumeAborted.add(clientId);
+        controller.abort();
+      }
+    }, this.resumeStallGraceMs);
   }
 
   /**
@@ -404,6 +483,10 @@ export class SyncEngine {
     if (this.watchdogTimer !== null) {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = null;
+    }
+    if (this.stallCheckTimer !== null) {
+      clearTimeout(this.stallCheckTimer);
+      this.stallCheckTimer = null;
     }
     this.scheduled = false;
   }
@@ -657,6 +740,7 @@ export class SyncEngine {
 
     try {
       await this.executeOperation(op);
+      this.resumeAborted.delete(op.clientId);
       // If dispose() was called while the send was in flight, skip writing
       // to a DB we no longer own. The send itself already landed server-side;
       // the next engine instance will reconcile via Matrix sync.
@@ -664,6 +748,7 @@ export class SyncEngine {
       await this.db.pendingOps.delete(op.id!);
       this.onChange?.(op.roomId);
     } catch (e) {
+      const restartedOnResume = this.resumeAborted.delete(op.clientId);
       if (this.disposed) return;
 
       try {
@@ -678,6 +763,16 @@ export class SyncEngine {
         if (op.clientId && (await this.isMessageAlreadyConfirmed(op.clientId))) {
           await this.db.pendingOps.delete(op.id!);
           this.onChange?.(op.roomId);
+          return;
+        }
+
+        // resumeAfterBackground aborted a stalled upload: restart it now and
+        // keep the retry budget — the failure was the phone sleeping.
+        if (restartedOnResume) {
+          await this.db.pendingOps.update(op.id!, {
+            status: "pending",
+            nextAttemptAt: Date.now(),
+          });
           return;
         }
 
@@ -977,10 +1072,15 @@ export class SyncEngine {
       if (controller.signal.aborted) {
         throw new DOMException("Upload cancelled", "AbortError");
       }
-      const onProgress = makeThrottledProgress((percent) => {
+      const writeProgress = makeThrottledProgress((percent) => {
         // fire-and-forget; progress is advisory and must not stall upload
         void this.messageRepo.updateUploadProgress(op.clientId, percent);
       });
+      this.uploadActivityAt.set(op.clientId, Date.now());
+      const onProgress = (p: { loaded: number; total: number }) => {
+        this.uploadActivityAt.set(op.clientId, Date.now());
+        writeProgress(p);
+      };
       // The retry loop sits *inside* the timeout so the deadline covers the
       // whole upload phase (including in-attempt retries) rather than being
       // reset between attempts — protects against a runaway 4×4-min loop on
@@ -998,6 +1098,8 @@ export class SyncEngine {
         MEDIA_UPLOAD_TIMEOUT_MS,
         "Media upload",
       );
+      // Network phase over — the short send-event phase is not a stall target.
+      this.uploadActivityAt.delete(op.clientId);
 
       await this.db.attachments.update(attachment.id!, {
         status: "uploaded",
@@ -1105,7 +1207,10 @@ export class SyncEngine {
       // Release the controller slot regardless of outcome so a retry can
       // register a fresh one.
       const current = this.activeUploads.get(op.clientId);
-      if (current === controller) this.activeUploads.delete(op.clientId);
+      if (current === controller) {
+        this.activeUploads.delete(op.clientId);
+        this.uploadActivityAt.delete(op.clientId);
+      }
     }
   }
 
@@ -1347,15 +1452,18 @@ export class SyncEngine {
     this.processQueue();
   }
 
-  /** Retry all failed operations */
-  async retryAllFailed(): Promise<void> {
+  /** Retry all failed operations (optionally only those matching `include`) */
+  async retryAllFailed(include?: (op: PendingOperation) => boolean): Promise<void> {
     // Snapshot the failed ops BEFORE resetting them so we can mirror the
     // reset onto each room's preview status (WEE-64).
-    const failedOps = await this.db.pendingOps.where("status").equals("failed").toArray();
-    await this.db.pendingOps
-      .where("status")
-      .equals("failed")
-      .modify({ status: "pending", retries: 0, errorMessage: undefined, nextAttemptAt: 0 });
+    const rearm = { status: "pending" as const, retries: 0, errorMessage: undefined, nextAttemptAt: 0 };
+    let failedOps = await this.db.pendingOps.where("status").equals("failed").toArray();
+    if (include) {
+      failedOps = failedOps.filter(include);
+      await this.db.pendingOps.bulkUpdate(failedOps.map((op) => ({ key: op.id!, changes: rearm })));
+    } else {
+      await this.db.pendingOps.where("status").equals("failed").modify(rearm);
+    }
 
     // WEE-64: a failed send returning to the queue must reset its chat-list
     // preview from "failed" back to "pending" (отправляется), symmetric to
@@ -1365,11 +1473,52 @@ export class SyncEngine {
       if (!op.clientId || !SEND_OPS.has(op.type)) continue;
       const msg = await this.messageRepo.getByClientId(op.clientId);
       if (msg) {
+        // The bubble must leave the failed state too, or it keeps offering
+        // Retry for a send that is already back in flight.
+        if (msg.status === "failed" && !msg.eventId) {
+          await this.messageRepo.updateStatus({ clientId: op.clientId }, "pending");
+        }
         await this.roomRepo.syncLastMessageLocalStatus(op.roomId, msg.timestamp, "pending");
       }
     }
 
     this.processQueue();
+  }
+
+  /**
+   * User tapped Retry on a failed media bubble. Re-arms the message's
+   * persisted send_file op, which uploads from the blob stored in
+   * `attachments` — unlike the old in-component retry, this survives the
+   * WebView being reloaded (blob: URLs die with the document).
+   *
+   * Returns false when the queue holds no send_file op for this clientId;
+   * the caller then falls back to rebuilding the send itself.
+   */
+  async retryMediaOperation(clientId: string): Promise<boolean> {
+    const op = await this.db.pendingOps
+      .where("clientId")
+      .equals(clientId)
+      .filter((o) => o.type === "send_file")
+      .first();
+    if (!op) return false;
+
+    // Already claimed by a worker: nothing to re-arm, it is uploading.
+    if (op.status !== "syncing") {
+      await this.db.pendingOps.update(op.id!, {
+        status: "pending",
+        retries: 0,
+        errorMessage: undefined,
+        nextAttemptAt: 0,
+      });
+    }
+    const msg = await this.messageRepo.getByClientId(clientId);
+    if (msg && !msg.eventId && msg.status !== "synced") {
+      await this.messageRepo.updateStatus({ clientId }, "pending");
+      await this.messageRepo.updateUploadProgress(clientId, 0);
+      await this.roomRepo.syncLastMessageLocalStatus(op.roomId, msg.timestamp, "pending");
+    }
+    this.processQueue();
+    return true;
   }
 
   /** Get count of pending/failed operations */

@@ -153,6 +153,17 @@ describe('pushService.unregisterForLogout', () => {
     await expect(svc.unregisterForLogout()).resolves.toBeUndefined();
   });
 
+  it('leaves the FCM token alone on a build without Firebase (unregister would crash natively)', async () => {
+    PushData.isFcmAvailable.mockResolvedValue({ available: false });
+    const { svc, internals } = await loadService();
+    const client = signedIn(internals);
+
+    await svc.unregisterForLogout();
+
+    expect(client.setPusher).toHaveBeenCalledOnce();
+    expect(PushNotifications.unregister).not.toHaveBeenCalled();
+  });
+
   it('forgets the tokens, so a second logout deletes nothing twice', async () => {
     const { svc, internals } = await loadService();
     const client = signedIn(internals);
@@ -171,6 +182,21 @@ describe('pushService.unregisterForLogout', () => {
       await vi.waitFor(() => expect(PushNotifications.unregister).toHaveBeenCalledOnce());
 
       expect(PushData.markLoggedOut).toHaveBeenCalledOnce();
+    });
+
+    it('does not touch FCM when the build has no google-services.json', async () => {
+      // Regression: the sideload test APK has no Firebase, and the plugin's
+      // unregister() then throws natively; Capacitor rethrows, so the app died
+      // on every launch right after the login screen appeared (2026-10-14).
+      PushData.isFcmAvailable.mockResolvedValue({ available: false });
+      const { svc } = await loadService();
+
+      svc.settleSignedOutLaunch();
+      await vi.waitFor(() => expect(PushData.isFcmAvailable).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(PushData.markLoggedOut).toHaveBeenCalledOnce();
+      expect(PushNotifications.unregister).not.toHaveBeenCalled();
     });
 
     it('on iOS only marks the session, leaving the APNs registration alone', async () => {

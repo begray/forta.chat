@@ -770,24 +770,7 @@ class PushService {
     }
 
     // 4. Register for FCM (skip when google-services.json was not bundled — crashes otherwise).
-    // The probe is an Android plugin method: on iOS `PushData` is
-    // IOSPushIntentPlugin, which has no `isFcmAvailable`, so the call rejects
-    // with UNIMPLEMENTED and every iOS build used to bail out here — no APNs
-    // registration and no VoIP pusher, ever (iPhone XR, 2026-09-24). Firebase
-    // on iOS is configured from GoogleService-Info.plist and aborts at launch
-    // when it is missing, so an iOS build that got this far has it.
-    let fcmAvailable = true;
-    if (!isIOS) {
-      try {
-        const status = await PushData.isFcmAvailable();
-        fcmAvailable = status.available;
-      } catch (e) {
-        console.warn('[PushService] isFcmAvailable check failed, assuming FCM disabled:', e);
-        fcmAvailable = false;
-      }
-    }
-
-    if (!fcmAvailable) {
+    if (!(await this.isFcmAvailable())) {
       console.warn(
         '[PushService] FCM not configured (no google-services.json at build time) — skipping PushNotifications.register()',
       );
@@ -864,9 +847,39 @@ class PushService {
       .then(() => PushData.markLoggedOut())
       .catch((e) => console.warn('[PushService] markLoggedOut failed:', e));
     if (isIOS) return;
-    this.tokenReset = Promise.resolve()
-      .then(() => PushNotifications.unregister())
+    this.tokenReset = this.deleteFcmToken()
       .catch((e) => console.warn('[PushService] FCM token delete failed:', e));
+  }
+
+  /**
+   * Whether this build can talk to FCM. The probe is an Android plugin method:
+   * on iOS `PushData` is IOSPushIntentPlugin, which has no `isFcmAvailable`, so
+   * the call rejects with UNIMPLEMENTED and every iOS build used to bail out of
+   * registration — no APNs registration and no VoIP pusher, ever (iPhone XR,
+   * 2026-09-24). Firebase on iOS is configured from GoogleService-Info.plist and
+   * aborts at launch when it is missing, so an iOS build that runs has it.
+   */
+  private async isFcmAvailable(): Promise<boolean> {
+    if (isIOS) return true;
+    try {
+      return (await PushData.isFcmAvailable()).available;
+    } catch (e) {
+      console.warn('[PushService] isFcmAvailable check failed, assuming FCM disabled:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Android: delete the FCM token. Skipped when the build has no
+   * google-services.json: the plugin's unregister() then calls
+   * FirebaseMessaging.getInstance() on an uninitialised FirebaseApp, and the
+   * IllegalStateException is rethrown by Capacitor's bridge as a
+   * RuntimeException, killing the app — on every signed-out launch, right
+   * after the login screen appears (sideload test build, 2026-10-14).
+   */
+  private async deleteFcmToken(): Promise<void> {
+    if (!(await this.isFcmAvailable())) return;
+    await PushNotifications.unregister();
   }
 
   /**
@@ -916,7 +929,7 @@ class PushService {
       removals.push(Promise.resolve().then(() => matrixClient.setPusher(payload)));
     }
     if (!isIOS) {
-      this.tokenReset = Promise.resolve().then(() => PushNotifications.unregister()).catch(() => undefined);
+      this.tokenReset = this.deleteFcmToken().catch(() => undefined);
       removals.push(this.tokenReset);
     }
 
