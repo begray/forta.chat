@@ -488,6 +488,8 @@ const isUploading = computed(() =>
 // guard suppresses the WEE-40 false-failed indicator on messages that the
 // peer actually received.
 const isFailed = computed(() => isMessageFailedForRetry(props.message));
+/** Failed and its local file copy is gone: Retry cannot work. */
+const isFileLost = computed(() => isFailed.value && props.message.uploadError === "file_lost");
 
 const fileIcon = computed(() => {
   const type = props.message.fileInfo?.type ?? "";
@@ -995,15 +997,15 @@ const replyPreviewSender = computed(() => {
           </div>
           <!-- Upload progress overlay -->
           <div v-if="isUploading" class="absolute inset-0 flex items-center justify-center bg-black/30">
-            <button class="relative flex h-14 w-14 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+            <button class="relative flex h-14 w-14 items-center justify-center rounded-full bg-black/50" :aria-label="t('messageList.cancel')" @click.stop="emit('cancelUpload', message)">
               <svg class="h-full w-full" viewBox="0 0 36 36">
                 <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-opacity="0.3" stroke-width="2.5" />
                 <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-width="2.5"
                   :stroke-dasharray="94.25" :stroke-dashoffset="94.25 - (94.25 * (message.uploadProgress ?? 0) / 100)"
                   stroke-linecap="round" transform="rotate(-90 18 18)" class="transition-[stroke-dashoffset] duration-300" />
               </svg>
-              <svg class="absolute h-3.5 w-3.5" viewBox="0 0 14 14" fill="none">
-                <path d="M3 3l8 8M11 3l-8 8" stroke="white" stroke-width="2" stroke-linecap="round"/>
+              <svg class="absolute h-4 w-4" viewBox="0 0 14 14" fill="none">
+                <path d="M3 3l8 8M11 3l-8 8" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
               </svg>
             </button>
           </div>
@@ -1013,13 +1015,14 @@ const replyPreviewSender = computed(() => {
           </div>
           <!-- Failed overlay with retry -->
           <div v-if="isFailed && hasFileInfo" class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
-            <button class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
+            <span v-if="isFileLost" class="px-3 text-center text-xs font-medium text-white">{{ t('message.fileLost') }}</span>
+            <button v-else class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
               </svg>
               <span class="text-xs font-medium">{{ t('message.retry') }}</span>
             </button>
-            <button class="rounded-full bg-black/40 px-2.5 py-0.5 text-[11px] text-white/80" @click.stop="emit('cancelUpload', message)">{{ t('messageList.cancel') }}</button>
+            <button class="rounded-full bg-black/40 px-2.5 py-0.5 text-[11px] text-white/80" @click.stop="emit('cancelUpload', message)">{{ t('contextMenu.delete') }}</button>
           </div>
           <div v-if="themeStore.showTimestamps && !message.fileInfo?.caption" class="absolute bottom-1 right-2 flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5">
             <span class="text-[10px] text-white/90">{{ time }}</span>
@@ -1064,15 +1067,15 @@ const replyPreviewSender = computed(() => {
         <VideoCirclePlayer :message="message" :is-own="props.isOwn" />
         <!-- Upload progress overlay for video circle -->
         <div v-if="isUploading" class="absolute inset-0 flex items-center justify-center rounded-full bg-black/30">
-          <button class="relative flex h-14 w-14 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+          <button class="relative flex h-14 w-14 items-center justify-center rounded-full bg-black/50" :aria-label="t('messageList.cancel')" @click.stop="emit('cancelUpload', message)">
             <svg class="h-full w-full" viewBox="0 0 36 36">
               <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-opacity="0.3" stroke-width="2.5" />
               <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-width="2.5"
                 :stroke-dasharray="94.25" :stroke-dashoffset="94.25 - (94.25 * (message.uploadProgress ?? 0) / 100)"
                 stroke-linecap="round" transform="rotate(-90 18 18)" class="transition-[stroke-dashoffset] duration-300" />
             </svg>
-            <svg class="absolute h-3.5 w-3.5" viewBox="0 0 14 14" fill="none">
-              <path d="M3 3l8 8M11 3l-8 8" stroke="white" stroke-width="2" stroke-linecap="round"/>
+            <svg class="absolute h-4 w-4" viewBox="0 0 14 14" fill="none">
+              <path d="M3 3l8 8M11 3l-8 8" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
             </svg>
           </button>
         </div>
@@ -1080,13 +1083,14 @@ const replyPreviewSender = computed(() => {
           <div class="contain-strict h-8 w-8 animate-spin rounded-full border-3 border-white border-t-transparent" />
         </div>
         <div v-if="isFailed && hasFileInfo" class="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-full bg-black/40">
-          <button class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
+          <span v-if="isFileLost" class="px-3 text-center text-xs font-medium text-white">{{ t('message.fileLost') }}</span>
+          <button v-else class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
             </svg>
             <span class="text-xs font-medium">{{ t('message.retry') }}</span>
           </button>
-          <button class="rounded-full bg-black/40 px-2.5 py-0.5 text-[11px] text-white/80" @click.stop="emit('cancelUpload', message)">{{ t('messageList.cancel') }}</button>
+          <button class="rounded-full bg-black/40 px-2.5 py-0.5 text-[11px] text-white/80" @click.stop="emit('cancelUpload', message)">{{ t('contextMenu.delete') }}</button>
         </div>
         <!-- Timestamp below the circle -->
         <div v-if="themeStore.showTimestamps" class="mt-1 flex items-center gap-1" :class="props.isOwn ? 'justify-end text-text-on-main-bg-color' : 'text-text-on-main-bg-color'">
@@ -1211,15 +1215,15 @@ const replyPreviewSender = computed(() => {
           </div>
           <!-- Upload progress overlay for video -->
           <div v-if="isUploading" class="absolute inset-0 flex items-center justify-center bg-black/30">
-            <button class="relative flex h-14 w-14 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+            <button class="relative flex h-14 w-14 items-center justify-center rounded-full bg-black/50" :aria-label="t('messageList.cancel')" @click.stop="emit('cancelUpload', message)">
               <svg class="h-full w-full" viewBox="0 0 36 36">
                 <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-opacity="0.3" stroke-width="2.5" />
                 <circle cx="18" cy="18" r="15" fill="none" stroke="white" stroke-width="2.5"
                   :stroke-dasharray="94.25" :stroke-dashoffset="94.25 - (94.25 * (message.uploadProgress ?? 0) / 100)"
                   stroke-linecap="round" transform="rotate(-90 18 18)" class="transition-[stroke-dashoffset] duration-300" />
               </svg>
-              <svg class="absolute h-3.5 w-3.5" viewBox="0 0 14 14" fill="none">
-                <path d="M3 3l8 8M11 3l-8 8" stroke="white" stroke-width="2" stroke-linecap="round"/>
+              <svg class="absolute h-4 w-4" viewBox="0 0 14 14" fill="none">
+                <path d="M3 3l8 8M11 3l-8 8" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
               </svg>
             </button>
           </div>
@@ -1227,13 +1231,14 @@ const replyPreviewSender = computed(() => {
             <div class="contain-strict h-8 w-8 animate-spin rounded-full border-3 border-white border-t-transparent" />
           </div>
           <div v-if="isFailed && hasFileInfo && !videoPlaybackError" class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
-            <button class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
+            <span v-if="isFileLost" class="px-3 text-center text-xs font-medium text-white">{{ t('message.fileLost') }}</span>
+            <button v-else class="flex flex-col items-center gap-1 text-white" @click.stop="emit('retryMedia', message)">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
               </svg>
               <span class="text-xs font-medium">{{ t('message.retry') }}</span>
             </button>
-            <button class="rounded-full bg-black/40 px-2.5 py-0.5 text-[11px] text-white/80" @click.stop="emit('cancelUpload', message)">{{ t('messageList.cancel') }}</button>
+            <button class="rounded-full bg-black/40 px-2.5 py-0.5 text-[11px] text-white/80" @click.stop="emit('cancelUpload', message)">{{ t('contextMenu.delete') }}</button>
           </div>
         </div>
         <div v-if="!message.fileInfo?.caption" class="flex items-center justify-between px-3 py-1.5">
@@ -1314,9 +1319,9 @@ const replyPreviewSender = computed(() => {
         <p v-else-if="fileState.error" class="mt-1 text-xs text-color-bad">{{ fileState.error }}</p>
         <!-- Upload progress with cancel for audio -->
         <div v-if="isUploading" class="mt-1 flex items-center gap-2">
-          <button class="relative flex h-8 w-8 shrink-0 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+          <button class="relative flex h-8 w-8 shrink-0 items-center justify-center" :aria-label="t('messageList.cancel')" @click.stop="emit('cancelUpload', message)">
             <svg class="h-full w-full" viewBox="0 0 36 36">
-              <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-opacity="0.2" stroke-width="2.5" />
+              <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-opacity="0.35" stroke-width="2.5" />
               <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="2.5"
                 :stroke-dasharray="94.25" :stroke-dashoffset="94.25 - (94.25 * (message.uploadProgress ?? 0) / 100)"
                 stroke-linecap="round" transform="rotate(-90 18 18)" class="transition-[stroke-dashoffset] duration-300" />
@@ -1329,8 +1334,9 @@ const replyPreviewSender = computed(() => {
         </div>
         <!-- Failed with retry for audio -->
         <div v-if="isFailed && hasFileInfo" class="mt-1 flex items-center gap-2">
-          <button class="text-xs font-medium text-color-bg-ac" @click.stop="emit('retryMedia', message)">{{ t('message.retry') }}</button>
-          <button class="text-xs opacity-60" @click.stop="emit('cancelUpload', message)">{{ t('messageList.cancel') }}</button>
+          <span v-if="isFileLost" class="text-xs text-color-bad">{{ t('message.fileLost') }}</span>
+          <button v-else class="text-xs font-medium text-color-bg-ac" @click.stop="emit('retryMedia', message)">{{ t('message.retry') }}</button>
+          <button class="text-xs opacity-60" @click.stop="emit('cancelUpload', message)">{{ t('contextMenu.delete') }}</button>
         </div>
         <div v-if="themeStore.showTimestamps" class="mt-1 flex items-center justify-end gap-1" :class="props.isOwn ? 'text-white/60' : 'text-text-on-main-bg-color'">
           <span class="text-[10px]">{{ time }}</span>
@@ -1401,9 +1407,9 @@ const replyPreviewSender = computed(() => {
         <p v-else-if="fileState.error" class="mt-1 text-xs text-color-bad">{{ fileState.error }}</p>
         <!-- Upload progress with cancel for file -->
         <div v-if="isUploading" class="mt-1 flex items-center gap-2">
-          <button class="relative flex h-8 w-8 shrink-0 items-center justify-center" @click.stop="emit('cancelUpload', message)">
+          <button class="relative flex h-8 w-8 shrink-0 items-center justify-center" :aria-label="t('messageList.cancel')" @click.stop="emit('cancelUpload', message)">
             <svg class="h-full w-full" viewBox="0 0 36 36">
-              <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-opacity="0.2" stroke-width="2.5" />
+              <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-opacity="0.35" stroke-width="2.5" />
               <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="2.5"
                 :stroke-dasharray="94.25" :stroke-dashoffset="94.25 - (94.25 * (message.uploadProgress ?? 0) / 100)"
                 stroke-linecap="round" transform="rotate(-90 18 18)" class="transition-[stroke-dashoffset] duration-300" />
@@ -1416,8 +1422,9 @@ const replyPreviewSender = computed(() => {
         </div>
         <!-- Failed with retry for file -->
         <div v-if="isFailed && hasFileInfo" class="mt-1 flex items-center gap-2">
-          <button class="text-xs font-medium text-color-bg-ac" @click.stop="emit('retryMedia', message)">{{ t('message.retry') }}</button>
-          <button class="text-xs opacity-60" @click.stop="emit('cancelUpload', message)">{{ t('messageList.cancel') }}</button>
+          <span v-if="isFileLost" class="text-xs text-color-bad">{{ t('message.fileLost') }}</span>
+          <button v-else class="text-xs font-medium text-color-bg-ac" @click.stop="emit('retryMedia', message)">{{ t('message.retry') }}</button>
+          <button class="text-xs opacity-60" @click.stop="emit('cancelUpload', message)">{{ t('contextMenu.delete') }}</button>
         </div>
         <div v-if="message.fileInfo?.caption" class="mt-1 text-chat-base opacity-90">
           <MessageContent :text="message.fileInfo.caption" @mention-click="(userId) => openUserProfile?.(hexDecode(userId))" />

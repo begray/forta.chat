@@ -10,6 +10,7 @@ import { useI18n } from "@/shared/lib/i18n";
 import { useToast } from "@/shared/lib/use-toast";
 import { useMediaUpload } from "../model/use-media-upload";
 import { usePasteDrop } from "../model/use-paste-drop";
+import { sendBatch } from "../model/send-batch";
 import EmojiPicker from "./EmojiPicker.vue";
 import AttachmentPanel from "./AttachmentPanel.vue";
 import MediaPreview from "./MediaPreview.vue";
@@ -56,7 +57,7 @@ const pasteDrop = usePasteDrop({
   onMediaFiles: (files) => mediaUpload.addFiles(files),
   onOtherFiles: async (files) => {
     sending.value = true;
-    try { await Promise.allSettled(files.map((file) => sendFile(file))); }
+    try { await sendBatch(files, (file) => sendFile(file), (file) => file.name); }
     finally { sending.value = false; }
   },
 });
@@ -453,10 +454,8 @@ const handleFileSelect = async (e: Event) => {
   if (!target.files?.length) return;
   sending.value = true;
   try {
-    // Multi-pick: kick off every send concurrently. Each call only does an
-    // optimistic Dexie insert + enqueue; the real upload is serialised by
-    // SyncEngine. allSettled keeps one failed enqueue from blocking the rest.
-    await Promise.allSettled(Array.from(target.files).map((file) => sendFile(file)));
+    // Multi-pick: kick off every send concurrently (see sendBatch).
+    await sendBatch(Array.from(target.files), (file) => sendFile(file), (file) => file.name);
   } finally { sending.value = false; target.value = ""; }
 };
 
@@ -468,13 +467,15 @@ const handleMediaSend = async () => {
     // Caption travels on the LAST file so the chat reads as a single
     // gallery; precompute the index here and dispatch the rest in parallel.
     const lastIdx = files.length - 1;
-    await Promise.allSettled(
-      files.map((f, i) => {
+    await sendBatch(
+      files,
+      (f, i) => {
         const captionOpts = i === lastIdx && mediaUpload.caption.value
           ? { caption: mediaUpload.caption.value, captionAbove: mediaUpload.captionAbove.value }
           : {};
         return f.type === "image" ? sendImage(f.file, captionOpts) : sendFile(f.file);
-      }),
+      },
+      (f) => f.file.name,
     );
   } finally { mediaUpload.clear(); }
 };
@@ -864,7 +865,7 @@ defineExpose({
   addMediaFiles: (files: File[]) => mediaUpload.addFiles(files),
   sendOtherFiles: async (files: File[]) => {
     sending.value = true;
-    try { await Promise.allSettled(files.map((file) => sendFile(file))); }
+    try { await sendBatch(files, (file) => sendFile(file), (file) => file.name); }
     finally { sending.value = false; }
   },
 });

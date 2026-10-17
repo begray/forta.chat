@@ -235,8 +235,14 @@ export class MessageRepository {
     linkPreview?: LocalMessage["linkPreview"];
     localBlobUrl?: string;
     uploadProgress?: number;
+    /** Set by sends that upload inline, without a queue op (GIF): keeps the
+     *  watchdog's orphan sweep off them while they run. */
+    uploadPhase?: LocalMessage["uploadPhase"];
+    /** Pre-generated clientId (media sends log their steps under it before
+     *  the row exists). */
+    clientId?: string;
   }): Promise<LocalMessage> {
-    const clientId = crypto.randomUUID();
+    const clientId = params.clientId ?? crypto.randomUUID();
     const now = Date.now();
     const msgType = params.type ?? MessageType.text;
 
@@ -260,6 +266,7 @@ export class MessageRepository {
       linkPreview: params.linkPreview,
       localBlobUrl: params.localBlobUrl,
       uploadProgress: params.uploadProgress,
+      uploadPhase: params.uploadPhase,
     };
 
     await this.db.transaction("rw", [this.db.messages, this.db.rooms], async () => {
@@ -769,39 +776,87 @@ export class MessageRepository {
     return url;
   }
 
+  /** Fail media sends that show "sending" with nothing behind them: no
+   *  pending or syncing send_file op. Such a row never completes on its own
+   *  (an older build wrote the bubble, file copy and op in separate steps and
+   *  could stop half-way; an op can also fail while a Retry flips the bubble
+   *  back to pending). They become "failed" so the bubble offers Retry and
+   *  Delete; when the file copy is gone too, `uploadError: "file_lost"` tells
+   *  the user to pick the file again instead.
+   *
+   *  Only rows older than `maxAgeMs` are touched. `skipInlineRetries` leaves
+   *  rows with an `uploadPhase` alone: the inline retry pipeline uploads
+   *  without an op and marks them itself (in-session sweep only — after a
+   *  restart nothing is running any more). */
+  async failOrphanedMedia(
+    maxAgeMs: number,
+    { skipInlineRetries = false }: { skipInlineRetries?: boolean } = {},
+  ): Promise<LocalMessage[]> {
+    const cutoff = Date.now() - maxAgeMs;
+    const stuck = (await this.getByStatusAcrossRooms("pending")).filter(
+      (m) =>
+        m.uploadProgress !== undefined &&
+        m.timestamp < cutoff &&
+        !(skipInlineRetries && m.uploadPhase),
+    );
+    if (stuck.length === 0) return [];
+
+    const liveOpClientIds = new Set<string>();
+    await this.db.pendingOps
+      .where("clientId")
+      .anyOf(stuck.map((m) => m.clientId))
+      .filter((op) => op.status === "pending" || op.status === "syncing")
+      .each((op) => { liveOpClientIds.add(op.clientId); });
+    const orphaned = stuck.filter((m) => !liveOpClientIds.has(m.clientId));
+    if (orphaned.length === 0) return [];
+
+    const failed: LocalMessage[] = [];
+    await this.db.transaction("rw", [this.db.messages, this.db.rooms, this.db.attachments, this.db.pendingOps], async () => {
+      for (const m of orphaned) {
+        // Re-check inside the transaction: the op may have been enqueued or
+        // the row confirmed since the scan.
+        const current = await this.db.messages.get(m.localId!);
+        if (!current || current.status !== "pending") continue;
+        const live = await this.db.pendingOps
+          .where("clientId")
+          .equals(m.clientId)
+          .filter((op) => op.status === "pending" || op.status === "syncing")
+          .count();
+        if (live > 0) continue;
+        const hasFile = !!(await this.getLocalAttachmentBlob(m.localId!));
+        const changes = {
+          status: "failed" as LocalMessageStatus,
+          uploadProgress: undefined,
+          uploadPhase: undefined,
+          uploadError: hasFile ? undefined : ("file_lost" as const),
+        };
+        await this.db.messages.update(m.localId!, changes);
+        const room = await this.db.rooms.get(m.roomId);
+        if (room && room.lastMessageTimestamp === m.timestamp) {
+          await this.db.rooms.update(m.roomId, { lastMessageLocalStatus: "failed" as LocalMessageStatus });
+        }
+        failed.push({ ...current, ...changes });
+      }
+    });
+    return failed;
+  }
+
   /** Recover media messages stuck in "pending" from a previous session.
    *  Messages whose send_file op is still queued are left alone — SyncEngine
    *  resumes them from the persisted blob, so flipping them to "failed" would
    *  offer Retry on uploads that are still in flight. Only orphans (no live
-   *  op) are marked "failed" so the user sees a retry button instead of an
-   *  infinite spinner. Unsent media from the previous session also get their
-   *  dead blob: preview URL re-minted from the persisted blob.
+   *  op) are marked "failed" (see failOrphanedMedia) so the user sees a retry
+   *  button instead of an infinite spinner. Unsent media from the previous
+   *  session also get their dead blob: preview URL re-minted from the
+   *  persisted blob.
    *  @param maxAgeMs — only recover messages older than this (default 2 min) */
   async recoverStuckMedia(maxAgeMs = 2 * 60 * 1000): Promise<number> {
     const cutoff = Date.now() - maxAgeMs;
+    const orphaned = await this.failOrphanedMedia(maxAgeMs);
     const [pending, failed] = await Promise.all([
       this.getByStatusAcrossRooms("pending"),
       this.getByStatusAcrossRooms("failed"),
     ]);
-    const stuck = pending.filter((m) => m.uploadProgress !== undefined && m.timestamp < cutoff);
-
-    const liveOpClientIds = new Set<string>();
-    if (stuck.length > 0) {
-      await this.db.pendingOps
-        .where("clientId")
-        .anyOf(stuck.map((m) => m.clientId))
-        .filter((op) => op.status === "pending" || op.status === "syncing")
-        .each((op) => { liveOpClientIds.add(op.clientId); });
-    }
-    const orphaned = stuck.filter((m) => !liveOpClientIds.has(m.clientId));
-    if (orphaned.length > 0) {
-      await this.db.messages.bulkUpdate(
-        orphaned.map((m) => ({
-          key: m.localId!,
-          changes: { status: "failed" as LocalMessageStatus, uploadProgress: undefined },
-        })),
-      );
-    }
 
     // Previous-session previews only: a URL minted this session is still valid.
     const unsentMedia = [...pending, ...failed].filter(

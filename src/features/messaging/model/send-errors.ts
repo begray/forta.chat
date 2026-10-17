@@ -5,6 +5,7 @@ export type SendErrorKind =
   | "micDenied"
   | "pickerCancelled"
   | "fileTooLarge"
+  | "fileUnreadable"
   | "dbNotReady"
   | "matrixNotReady"
   | "cryptoNotReady"
