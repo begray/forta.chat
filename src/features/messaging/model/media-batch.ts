@@ -128,6 +128,8 @@ const realDeps: MediaBatchDeps = {
 };
 
 let deps: MediaBatchDeps = realDeps;
+/** configureMediaBatch ran: deps.cancelUpload is the composer's real one. */
+let cancelConfigured = false;
 
 /** Test hook (null restores the real dependencies); also clears the batch. */
 export function setMediaBatchDepsForTests(next: Partial<MediaBatchDeps> | null): void {
@@ -137,6 +139,7 @@ export function setMediaBatchDepsForTests(next: Partial<MediaBatchDeps> | null):
 
 /** The upload cancel/retry of use-messages (set by the composer). */
 export function configureMediaBatch(hooks: Pick<MediaBatchDeps, "cancelUpload" | "retryUpload">): void {
+  cancelConfigured = true;
   realDeps.cancelUpload = hooks.cancelUpload;
   realDeps.retryUpload = hooks.retryUpload;
 }
@@ -419,6 +422,35 @@ export async function cancelBatch(roomId: string): Promise<void> {
   // Queued first, so nothing new starts while the running ones stop.
   const ordered = [...open].sort((a, b) => Number(b.state === "queued") - Number(a.state === "queued"));
   for (const item of ordered) await cancelBatchItem(item.id);
+}
+
+/**
+ * Cancel every send (the background notification's Cancel): every open batch
+ * item in every room, then the other sends in `ids` (single sends, queue
+ * items recovered after a restart). `fallbackCancel` is used for those when
+ * the composer never configured its cancel (nothing was sent from it yet).
+ */
+export async function cancelAllMedia(
+  ids: readonly string[],
+  fallbackCancel?: (clientId: string) => Promise<void>,
+): Promise<void> {
+  const rooms = [...new Set(items.value.filter((i) => !isDone(i)).map((i) => i.roomId))];
+  for (const roomId of rooms) await cancelBatch(roomId);
+  const inBatch = new Set(items.value.map((i) => i.id));
+  const cancel = cancelConfigured || deps !== realDeps || !fallbackCancel ? deps.cancelUpload : fallbackCancel;
+  for (const id of ids) {
+    if (inBatch.has(id)) continue;
+    // A single video still compressing has no bubble yet; stopping the
+    // encode drops the send.
+    await cancelVideoCompression(id);
+    await cancel(id).catch((e) => console.warn("[media-batch] cancel failed:", e));
+  }
+}
+
+/** Follow the items in flight now (the background service's heartbeat: the
+ *  ticker's interval is throttled while the page is hidden). */
+export function nudgeMediaBatch(): void {
+  if (items.value.some(isActive)) void tick();
 }
 
 /** Retry the items whose upload failed (their bubbles still have the bytes). */

@@ -13,6 +13,7 @@ import { getUploadLog, resetUploadLogForTests } from "@/shared/lib/upload-log/up
 import { __resetSendErrorBusForTests, reportSendError, useSendErrorBus } from "../send-error-bus";
 import { SendError } from "../send-errors";
 import {
+  cancelAllMedia,
   cancelBatch,
   cancelBatchItem,
   dismissBatch,
@@ -196,6 +197,23 @@ describe("batch runner", () => {
     expect(sentNames()).not.toContain("d.mp4");
     expect(cancelUpload).toHaveBeenCalledWith("c3");
     expect(getUploadLog().some((e) => e.e === "batch:cancel-all")).toBe(true);
+  });
+
+  it("cancel everything (the background notification) also reaches sends outside the batch", async () => {
+    const run = start(["a.mp4", "b.mp4", "c.mp4"]);
+    await settle();
+    sends[0].resolve(true); // a uploading, b preparing, c queued
+    await settle();
+    const fallback = vi.fn(async () => {});
+
+    await cancelAllMedia(["c1", "solo"], fallback);
+    sends[1].resolve(false);
+    const outcome = await run;
+    expect(outcome.cancelled).toBe(3);
+    expect(cancelUpload).toHaveBeenCalledWith("c1");
+    // The single send goes through the composer's cancel, not the fallback.
+    expect(cancelUpload).toHaveBeenCalledWith("solo");
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   it("ends with one summary that names each failure's own reason, and no banner", async () => {
