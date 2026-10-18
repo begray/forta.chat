@@ -28,6 +28,7 @@ import { logUpload, logUploadError, fileLabel } from "@/shared/lib/upload-log/up
 import { APP_MAX_UPLOAD_BYTES } from "@/shared/lib/file-transfer/upload-limit";
 import { checkUploadSize, tooLargeError } from "./upload-size";
 import { prepareVideoForSend } from "./video-compression";
+import { holdTransfer } from "@/shared/lib/background-transfer";
 import { fileSourceOf, pickedAgoS, releaseFileSource } from "./picked-media";
 import { isUnreadableFileError, readPickedFile } from "./read-picked-file";
 import { buildVideoSendPayload } from "./video-message";
@@ -445,11 +446,16 @@ export function useMessages() {
    *  silently dropped before any visible side effect (caller can then
    *  preserve the share/forward intent or restore the input). */
   const sendFile = async (file: File, options: SendFileOptions = {}): Promise<boolean> => {
+    // The clientId is picked here so the background keep-alive holds the
+    // send from the first step (compression) until it is queued.
+    const clientId = options.clientId ?? crypto.randomUUID();
+    const release = holdTransfer(clientId);
     // A natively picked file's copy/grant is ours to give back once its
     // bytes are persisted (or the send is dropped).
     try {
-      return await sendFileOnce(file, options);
+      return await sendFileOnce(file, { ...options, clientId });
     } finally {
+      release();
       void releaseFileSource(file);
     }
   };
@@ -590,9 +596,12 @@ export function useMessages() {
   /** Send an image message (m.image event — compatible with bastyon-chat).
    *  See sendFile for the boolean return contract. */
   const sendImage = async (file: File, options: SendImageOptions = {}): Promise<boolean> => {
+    const clientId = options.clientId ?? crypto.randomUUID();
+    const release = holdTransfer(clientId);
     try {
-      return await sendImageOnce(file, options);
+      return await sendImageOnce(file, { ...options, clientId });
     } finally {
+      release();
       void releaseFileSource(file);
     }
   };

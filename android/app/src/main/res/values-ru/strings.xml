@@ -21,6 +21,8 @@
     <string name="channel_model_download_desc">Отображается во время загрузки офлайн-модели ИИ</string>
     <string name="channel_ai_inference">Ответ ИИ</string>
     <string name="channel_ai_inference_desc">Отображается во время генерации офлайн-ответа ИИ</string>
+    <string name="channel_media_upload">Отправка медиа</string>
+    <string name="channel_media_upload_desc">Показывается, пока отправляются фото и видео</string>
 
     <!-- AI model download notification -->
     <string name="model_download_title">Загрузка модели ИИ</string>

@@ -625,10 +625,22 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
           console.warn("[auth] SyncEngine resume failed:", e);
         });
       });
+      // Keep media sends going with the screen off: an Android foreground
+      // service runs while the send queue has work (see background-upload).
+      // Imported lazily: the messaging feature pulls in the chat store.
+      let offUploads: (() => void) | null = null;
+      let uploadsTornDown = false;
+      void import("@/features/messaging/model/background-upload")
+        .then(({ initBackgroundUploads }) => {
+          if (!uploadsTornDown) offUploads = initBackgroundUploads(chatDbKit.syncEngine);
+        })
+        .catch((e) => console.warn("[auth] background uploads unavailable:", e));
       _connectivityUnsub = () => {
         offConnectivity();
         offBackground();
         offForeground();
+        uploadsTornDown = true;
+        offUploads?.();
       };
       chatStore.setHelpers(matrixKit.value!, cryptoInstance);
 

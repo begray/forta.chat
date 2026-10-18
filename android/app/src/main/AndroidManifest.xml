@@ -184,6 +184,15 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!-- Media sends — keeps uploads and video compression going with the
+             screen off while the send queue has work. Same "dataSync" type
+             as the two services above; see docs/background-uploads.md and
+             BackgroundUploadService's own doc comment. -->
+        <service
+            android:name="com.forta.chat.plugins.backgroundupload.BackgroundUploadService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
         <service
             android:name=".FortaFirebaseMessagingService"
             android:exported="false">

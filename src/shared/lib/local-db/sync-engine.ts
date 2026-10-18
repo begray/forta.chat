@@ -363,6 +363,16 @@ function newPendingOp(
   };
 }
 
+/** A media send still to be done, for the background-upload keep-alive. */
+export interface MediaWorkItem {
+  clientId: string;
+  /** "uploading" while its bytes are on the wire, otherwise "waiting"
+   *  (queued, encrypting, between retries, sending the event). */
+  phase: "waiting" | "uploading";
+  /** 0-100 of the upload, once it reports progress. */
+  percent?: number;
+}
+
 /**
  * SyncEngine processes pending operations (outbound queue).
  *
@@ -437,6 +447,13 @@ export class SyncEngine {
   private hasSeenFirstOnline = false;
   private getRoomCrypto: GetRoomCryptoFn;
   private onChange?: OnChangeCallback;
+  /** See setMediaWorkListener. */
+  private mediaWorkListener: ((work: MediaWorkItem[]) => void) | null = null;
+  /** clientIds of the unfinished send_file ops, as last read from the queue. */
+  private mediaWorkIds: string[] = [];
+  private mediaWorkPercent = new Map<string, number>();
+  private mediaWorkReading = false;
+  private mediaWorkStale = false;
 
   constructor(
     private db: ChatDatabase,
@@ -719,7 +736,79 @@ export class SyncEngine {
    * kicking off the first tick without double-scheduling.
    */
   async processQueue(): Promise<void> {
+    this.reportMediaWork();
     this.kickScheduler(0);
+  }
+
+  /**
+   * Report the media sends still to be done to `listener`: send_file ops that
+   * are pending or running (failed ones wait for the user's Retry). Called
+   * now and whenever that changes, with upload progress in between. The list
+   * is read from the queue itself, so no outcome path can leave a finished
+   * send reported. Null unsubscribes.
+   */
+  setMediaWorkListener(listener: ((work: MediaWorkItem[]) => void) | null): void {
+    this.mediaWorkListener = listener;
+    if (listener) this.reportMediaWork();
+  }
+
+  /** Re-read the unfinished send_file ops and report them (coalesced). */
+  private reportMediaWork(): void {
+    if (!this.mediaWorkListener) return;
+    if (this.mediaWorkReading) {
+      this.mediaWorkStale = true;
+      return;
+    }
+    this.mediaWorkReading = true;
+    void (async () => {
+      try {
+        do {
+          this.mediaWorkStale = false;
+          if (this.disposed) {
+            this.mediaWorkIds = [];
+            break;
+          }
+          const ops = await this.db.pendingOps
+            .filter((op) => op.type === "send_file" && op.status !== "failed")
+            .toArray();
+          this.mediaWorkIds = [...new Set(ops.map((op) => op.clientId))];
+        } while (this.mediaWorkStale);
+      } catch (e) {
+        if (this.disposed || isDbClosedError(e)) this.mediaWorkIds = [];
+        else console.warn("[SyncEngine] reading the media queue failed:", e);
+      } finally {
+        this.mediaWorkReading = false;
+      }
+      if (this.disposed) this.mediaWorkIds = [];
+      for (const id of [...this.mediaWorkPercent.keys()]) {
+        if (!this.mediaWorkIds.includes(id)) this.mediaWorkPercent.delete(id);
+      }
+      this.emitMediaWork();
+    })();
+  }
+
+  private emitMediaWork(): void {
+    const listener = this.mediaWorkListener;
+    if (!listener) return;
+    try {
+      listener(
+        this.mediaWorkIds.map((clientId): MediaWorkItem => {
+          const uploading = this.uploadWatches.has(clientId);
+          const percent = this.mediaWorkPercent.get(clientId);
+          return uploading && percent !== undefined
+            ? { clientId, phase: "uploading", percent }
+            : { clientId, phase: uploading ? "uploading" : "waiting" };
+        }),
+      );
+    } catch (e) {
+      console.warn("[SyncEngine] media work listener failed:", e);
+    }
+  }
+
+  private noteMediaPercent(clientId: string, percent: number): void {
+    if (!this.mediaWorkListener || this.mediaWorkPercent.get(clientId) === percent) return;
+    this.mediaWorkPercent.set(clientId, percent);
+    if (this.mediaWorkIds.includes(clientId)) this.emitMediaWork();
   }
 
   /**
@@ -746,6 +835,9 @@ export class SyncEngine {
       watch.timer = null;
     }
     this.scheduled = false;
+    // Nothing more will be sent by this engine (logout / re-init).
+    this.mediaWorkIds = [];
+    this.emitMediaWork();
   }
 
   // ---------------------------------------------------------------------------
@@ -756,6 +848,7 @@ export class SyncEngine {
     if (this.watchdogTimer || this.disposed) return;
     this.watchdogTimer = setInterval(() => {
       if (this.disposed) return;
+      this.reportMediaWork();
       this.watchdogCheck().catch((e) =>
         console.warn("[SyncEngine] watchdog tick failed:", e),
       );
@@ -934,6 +1027,7 @@ export class SyncEngine {
         void this.runClaimedOp(op).finally(() => {
           this.activeOps.delete(op.id!);
           this.cancelledUploads.delete(op.clientId);
+          if (op.type === "send_file") this.reportMediaWork();
           // Re-check the queue: this room is free again, and the op may have
           // scheduled a retry whose wake-up needs (re)computing.
           this.kickScheduler(0);
@@ -1507,6 +1601,7 @@ export class SyncEngine {
       let loggedQuarter = 0;
       const onProgress = (p: UploadProgress) => {
         writeProgress(p);
+        if (p.total > 0) this.noteMediaPercent(op.clientId, Math.min(100, Math.round((p.loaded / p.total) * 100)));
         // Log 25/50/75/100% once per attempt.
         const quarter = p.total > 0 ? Math.floor((p.loaded / p.total) * 4) : 0;
         if (quarter > loggedQuarter) {
@@ -1534,6 +1629,7 @@ export class SyncEngine {
         startedAt +
         Math.max(this.uploadTimeoutMs, (fileToUpload.size / MEDIA_UPLOAD_MIN_BYTES_PER_SEC) * 1000);
       this.uploadWatches.set(op.clientId, watch);
+      this.emitMediaWork();
       watch.timer = setInterval(
         () => this.checkUploadWatch(op.clientId, watch, deadlineAt),
         this.uploadWatchTickMs,
@@ -1578,6 +1674,7 @@ export class SyncEngine {
         watch.timer = null;
         this.uploadAbortReasons.delete(op.clientId);
         if (this.uploadWatches.get(op.clientId) === watch) this.uploadWatches.delete(op.clientId);
+        this.emitMediaWork();
       }
 
       await this.db.attachments.update(attachment.id!, {
@@ -2085,6 +2182,7 @@ export class SyncEngine {
       .equals(clientId)
       .filter((op) => op.type === "send_file")
       .delete();
+    this.reportMediaWork();
   }
 
   /** Cancel a pending/failed operation and clean up */
@@ -2101,6 +2199,7 @@ export class SyncEngine {
     }
 
     await this.db.pendingOps.delete(opId);
+    if (op.type === "send_file") this.reportMediaWork();
     this.onChange?.(op.roomId);
   }
 }
