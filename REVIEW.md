@@ -1,11 +1,12 @@
 # Review guide: media upload reliability + video compression
 
-This fork holds 26 commits on top of upstream `4c4a51e7` (pocketnetteam/forta.chat master,
+This fork holds 29 commits on top of upstream `4c4a51e7` (pocketnetteam/forta.chat master,
 2026-10-09). They fix photos and videos that break while sending (screen lock, upload loops,
 stuck "sending" bubbles, files over the server limit) and add on-phone video compression, a
-native gallery picker, proper `m.video` messages and a compact bar for multi-item sends.
+native gallery picker, proper `m.video` messages, a compact bar for multi-item sends, and
+uploads that keep going with the screen off (Android).
 
-The work is split into 7 stacked draft PRs inside this fork. Each PR's base is the previous
+The work is split into 8 stacked draft PRs inside this fork. Each PR's base is the previous
 PR's branch, so every PR shows only its own commits. Nothing here targets upstream yet.
 
 ## Reading order
@@ -19,6 +20,7 @@ PR's branch, so every PR shows only its own commits. Nothing here targets upstre
 | 5 | `review/05-size-limit-cancel` | `review/04-stuck-bubbles` |
 | 6 | `review/06-video-compression` | `review/05-size-limit-cancel` |
 | 7 | `review/07-video-messages-batch` | `review/06-video-compression` |
+| 8 | `review/08-background-uploads` | `review/07-video-messages-batch` |
 
 Read them in this order. Each PR description lists the files to read closely and the ones you
 can skim (tests, mocks, i18n).
@@ -75,6 +77,14 @@ JPEG thumbnail. Multi-item sends get one compact bar (current item, "Uploading 3
 per-item cancel, one summary at the end) with at most 2 items in flight. Also adds the
 video-compression design notes.
 
+### 8. Background uploads: keep sending with the screen off (3 commits)
+Android put the app into Doze a few minutes after the screen locked; the upload's socket died
+and it restarted from byte 0 on unlock. A keep-alive `dataSync` foreground service
+(`BackgroundUploadService`, "Sending 3 of 12 · 40%" notification with Cancel, partial wake lock)
+now runs while any send is in progress. JS (`shared/lib/background-transfer`) starts it at send
+time, updates it and stops it when the SyncEngine queue, the batch and the compressor are all
+done. Not verified on a device yet. Design and limits: `docs/background-uploads.md`.
+
 ## Build and test locally
 
 Requirements: Node.js 22+, JDK 21 for Gradle, Android SDK (compileSdk 36) for the APK.
@@ -88,7 +98,7 @@ npm run test                     # full vitest suite (run it alone, ~10 min time
 npm run test -- src/shared/lib/local-db/__tests__/sync-engine-resume-loop.test.ts   # one file
 ```
 
-Kotlin unit tests (PRs 6 and 7):
+Kotlin unit tests (PRs 6, 7 and 8):
 
 ```bash
 npm run build && npx cap sync android
@@ -98,7 +108,8 @@ cd android && ./gradlew testSideloadDebugUnitTest --tests 'com.forta.chat.plugin
 Debug APK: `npm run build && npx cap sync android`, then `cd android && ./gradlew assembleSideloadDebug`. Without a
 `google-services.json` the build has no push, which is why PR 1 has the FCM guard.
 
-At the tip the suite was 5287/5288 and Kotlin 14/14. The one failure is a known timing flake: `sync-engine-resume-loop`
+At PR 7's tip the suite was 5287/5288 and Kotlin 14/14; with PR 8 it is 5310/5311, plus 6 new
+Kotlin tests. The one failure is a known timing flake: `sync-engine-resume-loop`
 ("hung upload ends as failed" / "past its deadline") fails about 1 run in 2-3 under full-suite
 load and passes alone. That test is ours (PR 2) and should be made deterministic before upstream.
 
@@ -106,8 +117,9 @@ load and passes alone. That test is ours (PR 2) and should be made deterministic
 
 - **Screen off is not device-tested.** The resume logic is unit-tested. One combined test build
   (PR 7 tip) was tried on a Pixel 6a and worked for normal sends, but the "lock the phone in the
-  middle of an upload" case has not been checked on a device. Nothing uploads or compresses
-  while the screen is off; a foreground service would be needed for that.
+  middle of an upload" case has not been checked on a device. PR 8 adds the foreground service
+  that should keep uploads and compression going with the screen off; that is not
+  device-checked either.
 - **Media3 version.** `media3Version = '1.10.1'` (Transformer, Effect, Common). It adds ~3 MB to
   the APK and needs compileSdk 36. HEVC, 10-bit HDR, 4K60 and slow-motion input are not
   device-checked.
