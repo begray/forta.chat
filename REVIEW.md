@@ -1,12 +1,13 @@
 # Review guide: media upload reliability + video compression
 
-This fork holds 29 commits on top of upstream `4c4a51e7` (pocketnetteam/forta.chat master,
+This fork holds 32 commits on top of upstream `4c4a51e7` (pocketnetteam/forta.chat master,
 2026-10-09). They fix photos and videos that break while sending (screen lock, upload loops,
 stuck "sending" bubbles, files over the server limit) and add on-phone video compression, a
-native gallery picker, proper `m.video` messages, a compact bar for multi-item sends, and
-uploads that keep going with the screen off (Android).
+native gallery picker, proper `m.video` messages, a compact bar for multi-item sends,
+uploads that keep going with the screen off (Android), and media shared from other apps that
+is sent once and through the same pipeline.
 
-The work is split into 8 stacked draft PRs inside this fork. Each PR's base is the previous
+The work is split into 9 stacked draft PRs inside this fork. Each PR's base is the previous
 PR's branch, so every PR shows only its own commits. Nothing here targets upstream yet.
 
 ## Reading order
@@ -21,6 +22,7 @@ PR's branch, so every PR shows only its own commits. Nothing here targets upstre
 | 6 | `review/06-video-compression` | `review/05-size-limit-cancel` |
 | 7 | `review/07-video-messages-batch` | `review/06-video-compression` |
 | 8 | `review/08-background-uploads` | `review/07-video-messages-batch` |
+| 9 | `review/09-share-dedupe` | `review/08-background-uploads` |
 
 Read them in this order. Each PR description lists the files to read closely and the ones you
 can skim (tests, mocks, i18n).
@@ -85,12 +87,21 @@ now runs while any send is in progress. JS (`shared/lib/background-transfer`) st
 time, updates it and stops it when the SyncEngine queue, the batch and the compressor are all
 done. Not verified on a device yet. Design and limits: `docs/background-uploads.md`.
 
+### 9. Shared media: no duplicates, same pipeline + background service (3 commits)
+Media shared into Forta from another app was sent twice. Upstream's composer kept the share,
+with Send enabled, until the last file was through, and the first bubble took ~5 s, so a second
+tap sent the whole share again (field log: 11 items, 22 sends). Now Send takes the share off the
+composer and claims it, a repeated share intent is dropped, and shared files go through the
+batch pipeline with the share plugin's copies read natively (no copy through the WebView before
+compressing). Also: the upload log header names the exact build (versionCode, commit), and a
+missing keep-alive plugin is logged as `fgs:unavailable`.
+
 ## Build and test locally
 
 Requirements: Node.js 22+, JDK 21 for Gradle, Android SDK (compileSdk 36) for the APK.
 
 ```bash
-git fetch https://github.com/begray/forta.chat.git review/07-video-messages-batch
+git fetch https://github.com/begray/forta.chat.git review/09-share-dedupe
 git checkout FETCH_HEAD          # or any review/* branch
 npm ci
 npm run build                    # vue-tsc + vite build (the type gate)
@@ -98,7 +109,7 @@ npm run test                     # full vitest suite (run it alone, ~10 min time
 npm run test -- src/shared/lib/local-db/__tests__/sync-engine-resume-loop.test.ts   # one file
 ```
 
-Kotlin unit tests (PRs 6, 7 and 8):
+Kotlin unit tests (PRs 6, 7 and 8; PR 9 adds none):
 
 ```bash
 npm run build && npx cap sync android
@@ -109,7 +120,7 @@ Debug APK: `npm run build && npx cap sync android`, then `cd android && ./gradle
 `google-services.json` the build has no push, which is why PR 1 has the FCM guard.
 
 At PR 7's tip the suite was 5287/5288 and Kotlin 14/14; with PR 8 it is 5310/5311, plus 6 new
-Kotlin tests. The one failure is a known timing flake: `sync-engine-resume-loop`
+Kotlin tests; with PR 9 it is 5327/5328. The one failure is a known timing flake: `sync-engine-resume-loop`
 ("hung upload ends as failed" / "past its deadline") fails about 1 run in 2-3 under full-suite
 load and passes alone. That test is ours (PR 2) and should be made deterministic before upstream.
 
@@ -119,7 +130,7 @@ load and passes alone. That test is ours (PR 2) and should be made deterministic
   (PR 7 tip) was tried on a Pixel 6a and worked for normal sends, but the "lock the phone in the
   middle of an upload" case has not been checked on a device. PR 8 adds the foreground service
   that should keep uploads and compression going with the screen off; that is not
-  device-checked either.
+  device-checked either. Nor is PR 9's share path.
 - **Media3 version.** `media3Version = '1.10.1'` (Transformer, Effect, Common). It adds ~3 MB to
   the APK and needs compileSdk 36. HEVC, 10-bit HDR, 4K60 and slow-motion input are not
   device-checked.
