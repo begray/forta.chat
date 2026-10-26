@@ -34,9 +34,7 @@ import { insertEmojiAtCursor } from "../model/emoji-insertion";
 import { deriveInputLayout } from "../model/input-layout";
 import { isPeerKeysOk } from "../model/peer-keys-ok";
 import { isNative } from "@/shared/lib/platform";
-import { readShareUriAsBlob } from "@/shared/lib/share-target";
-import { sendExternalShareFiles } from "../model/send-external-share";
-import { narrowExternalShareForward } from "@/entities/chat/lib/external-share-forward";
+import { sendShareFromComposer } from "../model/share-send";
 
 const PEER_KEYS_GRACE_MS = 2000;
 
@@ -333,27 +331,19 @@ const handleSend = async () => {
       const fwd = chatStore.forwardingMessage;
 
       // External share with file(s): upload them directly instead of a text
-      // forward. readShareUriAsBlob reads native paths / content:// URIs that
-      // a plain WebView fetch() can't open (#650).
+      // forward, through the same batch pipeline as a gallery pick. The
+      // share leaves the composer at once, so a second tap on Send cannot
+      // send it again (see share-send.ts).
       if (fwd.isExternalShare && fwd.fileInfo?.url) {
-        const files = fwd.externalFiles?.length ? fwd.externalFiles : [fwd.fileInfo];
-        const { sent, failedFiles } = await sendExternalShareFiles(files, rawText, {
-          readBlob: readShareUriAsBlob,
-          sendImage,
-          sendFile,
-          sendText: (body) => sendMessage(body, linkPreview.dismissed.value),
-        });
-        // Without a visible toast the user just sees the Send tap "do
-        // nothing" — surface every failure so they can retry (#710 #706).
-        if (failedFiles.length > 0) toast(t("share.sendFailed"), "error");
-        inserted = sent > 0;
-        if (failedFiles.length === 0) {
-          chatStore.cancelForward();
-        } else if (sent > 0) {
-          // Keep only what failed: the next Send retries those files without
-          // re-sending the caption or the files that already went out.
-          chatStore.forwardingMessage = narrowExternalShareForward(fwd, failedFiles);
-        }
+        inserted = await sendShareFromComposer(
+          { current: () => chatStore.forwardingMessage, clear: () => chatStore.cancelForward() },
+          rawText,
+          {
+            sendImage: (file, opts) => sendImage(file, opts),
+            sendFile: (file, opts) => sendFile(file, opts),
+            sendText: (body) => sendMessage(body, linkPreview.dismissed.value),
+          },
+        );
       } else {
         const forwardMeta = fwd.withSenderInfo
           ? { senderId: fwd.senderId, senderName: fwd.senderName }

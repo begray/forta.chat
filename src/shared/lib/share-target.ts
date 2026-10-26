@@ -1,5 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import { isNative } from "@/shared/lib/platform";
+import { logUpload } from "@/shared/lib/upload-log/upload-log";
 
 const STORAGE_KEY = "bastyon-chat-share-data";
 
@@ -12,6 +13,9 @@ export interface ExternalShareFile {
 export interface ExternalShareData {
   text?: string;
   files?: ExternalShareFile[];
+  /** Identity of the share intent (see shareKeyOf): repeats of the same
+   *  intent are dropped, and one share is sent at most once. */
+  key?: string;
 }
 
 /** Single-file shape persisted to localStorage by builds before multi-file
@@ -37,9 +41,21 @@ function safeDecode(segment: string): string {
   }
 }
 
+/** A `file://` URI for a native file reference (bare path or `file://`),
+ *  segments percent-encoded so `#`, `?` and `%` in names survive
+ *  `Uri.parse` on the native side. `content://` stays as it is. */
+export function toNativeFileUri(uri: string): string {
+  if (uri.startsWith("content://")) return uri;
+  const path = uri.startsWith("file://") ? uri.slice("file://".length) : uri;
+  return "file://" + path
+    .split("/")
+    .map((segment) => encodeURIComponent(safeDecode(segment)))
+    .join("/");
+}
+
 /** Map a native file reference to the WebView local-server URL. Path segments
  *  are re-encoded so names containing `#`, `?` or `%` don't truncate the URL. */
-function toWebViewUrl(uri: string): string {
+export function toWebViewUrl(uri: string): string {
   if (uri.startsWith("content://")) return Capacitor.convertFileSrc(uri);
   const path = uri.startsWith("file://") ? uri.slice("file://".length) : uri;
   const encoded = path
@@ -174,6 +190,84 @@ async function resolveSharedFile(file: ExternalShareFile): Promise<ExternalShare
   return resolved;
 }
 
+// --- Share identity ----------------------------------------------------------
+//
+// One share must reach the chat once. The capgo plugin hands the launch
+// intent over from load() (getIntent) and again from onNewIntent, and keeps
+// the event for late listeners; an Activity re-created mid-send (Bridge
+// reload) would deliver the very same intent again. And the composer's Send
+// may be tapped again while the first send is still preparing. So every
+// share carries a key, and:
+//  - the same share arriving again within SHARE_REPEAT_WINDOW_MS, or while
+//    it is being sent, is dropped (acceptShare);
+//  - a share is sent once: claimShareSend refuses while it is being sent and
+//    for the window after.
+
+export const SHARE_REPEAT_WINDOW_MS = 15_000;
+
+interface ShareSeen {
+  arrivedAt?: number;
+  sending: boolean;
+  sentAt?: number;
+}
+
+const seenShares = new Map<string, ShareSeen>();
+
+/** The identity of a share: its text and its files (path, name, type) as
+ *  the plugin delivered them. The plugin copies a shared item to
+ *  cache/shared_files/<its name>, so the same intent gives the same paths. */
+export function shareKeyOf(data: { text?: string; files?: { uri: string; name?: string; mimeType?: string }[] }): string {
+  const files = (data.files ?? []).map((f) => `${f.uri}|${f.name ?? ""}|${f.mimeType ?? ""}`);
+  return JSON.stringify([data.text ?? "", files]);
+}
+
+function pruneSeen(now: number): void {
+  for (const [key, s] of seenShares) {
+    const last = Math.max(s.arrivedAt ?? 0, s.sentAt ?? 0);
+    if (!s.sending && now - last > SHARE_REPEAT_WINDOW_MS) seenShares.delete(key);
+  }
+}
+
+function recently(at: number | undefined, now: number): boolean {
+  return at !== undefined && now - at < SHARE_REPEAT_WINDOW_MS;
+}
+
+/** A share arrived. False when it is a repeat of one that arrived within
+ *  the window, is being sent, or was sent within the window. */
+export function acceptShare(key: string, now: number = Date.now()): boolean {
+  pruneSeen(now);
+  const s = seenShares.get(key);
+  if (s && (s.sending || recently(s.arrivedAt, now) || recently(s.sentAt, now))) return false;
+  seenShares.set(key, { arrivedAt: now, sending: false });
+  return true;
+}
+
+/** The composer is about to send the share. False when it is already being
+ *  sent or was sent within the window: the second Send must do nothing. */
+export function claimShareSend(key: string, now: number = Date.now()): boolean {
+  pruneSeen(now);
+  const s = seenShares.get(key);
+  if (s && (s.sending || recently(s.sentAt, now))) return false;
+  seenShares.set(key, { arrivedAt: s?.arrivedAt, sending: true });
+  return true;
+}
+
+/** The share's send is through (whatever the outcome). */
+export function finishShareSend(key: string, now: number = Date.now()): void {
+  const s = seenShares.get(key);
+  seenShares.set(key, { arrivedAt: s?.arrivedAt, sending: false, sentAt: now });
+}
+
+/** Nothing of the share went out: forget it, so sharing it again works. */
+export function releaseShareClaim(key: string): void {
+  seenShares.delete(key);
+}
+
+/** @internal */
+export function __resetShareIdentityForTests(): void {
+  seenShares.clear();
+}
+
 let listenerRegistered = false;
 
 /** Initialize the share target listener (call once on app mount, native only).
@@ -192,7 +286,14 @@ export async function initShareTargetListener(
   const { CapacitorShareTarget } = await import("@capgo/capacitor-share-target");
 
   await CapacitorShareTarget.addListener("shareReceived", async (event) => {
-    const data: ExternalShareData = {};
+    // Keyed on what the plugin delivered, before any copy of ours (those
+    // get fresh names).
+    const key = shareKeyOf({ text: event.texts?.join("\n"), files: event.files });
+    if (!acceptShare(key)) {
+      logUpload("share:repeat", null, { n: event.files?.length ?? 0 });
+      return;
+    }
+    const data: ExternalShareData = { key };
 
     if (event.texts?.length) {
       data.text = event.texts.join("\n");
@@ -209,6 +310,7 @@ export async function initShareTargetListener(
     }
 
     if (data.text || data.files?.length) {
+      logUpload("share:received", null, { n: data.files?.length ?? 0, text: !!data.text });
       onShare(data);
     }
   });
@@ -220,4 +322,5 @@ export async function initShareTargetListener(
  *  @internal */
 export function __resetShareTargetListenerForTests(): void {
   listenerRegistered = false;
+  seenShares.clear();
 }

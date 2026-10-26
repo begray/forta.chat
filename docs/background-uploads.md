@@ -143,3 +143,22 @@ The log header names the build: `app: <versionName> (versionCode N, commit abcde
 comes from `VITE_BUILD_COMMIT` at `npm run build` time (e.g.
 `VITE_BUILD_COMMIT=$(git rev-parse --short=8 HEAD) npm run build`); without it the header has
 the version name and versionCode only.
+
+## 6. Media shared from another app
+Media shared into Forta (Android share sheet → Forta → chat → Send) goes through the same path
+as a gallery pick (`features/messaging/model/share-send.ts`):
+- The keep-alive needs nothing extra: it follows the SyncEngine queue, the batch and the send
+  calls, whatever the entry point (also media forwards and a Retry after a restart).
+- Send takes the share off the composer before the first slow step and claims it. Before, the
+  composer kept the share and an enabled Send until the last file was through (one at a time, ~5 s
+  of image preparation before the first bubble), and a second tap sent the whole share again
+  (field log 2026-10-26: 11 items, 22 sends). Upstream has the same code.
+- The share intent itself is keyed by its files and text (`shareKeyOf`): the same intent again
+  within 15 s, while it is being sent, or within 15 s after, is dropped (`share:repeat`). The capgo
+  plugin delivers the launch intent from `load()` and from `onNewIntent`, and a re-created
+  Activity hands over the same intent again.
+- The plugin's copies in `cache/shared_files` become sourced Files (kind `share`): read natively
+  when each send runs, opened by the video compressor directly (`compress:start src=share`, no
+  copy through the WebView), deleted once no send holds them.
+- Log: `share:received {n, text}`, `share:repeat {n}`, `share:dup {n}` (a second Send),
+  `pick:share {n, src: share, native, memory, unreadable}`, then the usual `batch:*` for 2+ items.

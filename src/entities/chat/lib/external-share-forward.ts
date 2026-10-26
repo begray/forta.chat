@@ -8,17 +8,6 @@ function typeForFiles(files: FileInfo[]): MessageType {
   return MessageType.file;
 }
 
-/** The same external share reduced to `files` — after a partial send, so the
- *  next Send retries only what failed. */
-export function narrowExternalShareForward(fwd: ForwardingMessage, files: FileInfo[]): ForwardingMessage {
-  return {
-    ...fwd,
-    type: typeForFiles(files),
-    fileInfo: files[0],
-    externalFiles: files.length > 0 ? files : undefined,
-  };
-}
-
 /** Synthetic ForwardingMessage for content arriving from the system Share
  *  Sheet. Every shared file is carried in `externalFiles`; `fileInfo` mirrors
  *  the first one for UI that only understands single-message forwards. */
@@ -44,5 +33,6 @@ export function buildExternalShareForward(
     externalFiles: files.length > 0 ? files : undefined,
     withSenderInfo: false,
     isExternalShare: true,
+    ...(data.key ? { shareKey: data.key } : {}),
   };
 }

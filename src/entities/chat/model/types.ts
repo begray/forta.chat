@@ -92,6 +92,8 @@ export interface ForwardingMessage {
   isExternalShare?: boolean;
   /** All files of an external share (the Share Sheet can hand over several). */
   externalFiles?: FileInfo[];
+  /** Identity of the share intent: one share is sent once (share-target). */
+  shareKey?: string;
   /** Original event timestamp — only meaningful for internal forwards of
    *  real messages (initForward). Used by the media re-upload path to
    *  derive the right decryption context. Omitted for synthetic

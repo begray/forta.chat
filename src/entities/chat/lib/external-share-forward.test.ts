@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildExternalShareForward, narrowExternalShareForward } from "./external-share-forward";
+import { buildExternalShareForward } from "./external-share-forward";
 import { MessageType } from "../model/types";
 
 const png = (name: string) => ({ uri: `/c/${name}`, name, mimeType: "image/png" });
@@ -49,19 +49,10 @@ describe("buildExternalShareForward", () => {
     expect(fwd.type).toBe(MessageType.file);
   });
 
-  it("narrows a partially-sent share to the failed files and re-derives the type", () => {
-    const fwd = buildExternalShareForward({
-      text: "note",
-      files: [png("a.png"), { uri: "/c/doc.pdf", name: "doc.pdf", mimeType: "application/pdf" }, png("b.png")],
-    });
-    const remaining = [fwd.externalFiles![0], fwd.externalFiles![2]];
-
-    const narrowed = narrowExternalShareForward(fwd, remaining);
-
-    expect(narrowed.externalFiles).toEqual(remaining);
-    expect(narrowed.fileInfo).toBe(remaining[0]);
-    expect(narrowed.type).toBe(MessageType.image);
-    expect(narrowed).toMatchObject({ id: fwd.id, isExternalShare: true, content: "note" });
+  it("carries the share's key, so one share is sent once", () => {
+    const fwd = buildExternalShareForward({ files: [png("a.png")], key: "k1" });
+    expect(fwd.shareKey).toBe("k1");
+    expect(buildExternalShareForward({ files: [png("a.png")] }).shareKey).toBeUndefined();
   });
 
   it("fills defaults for a nameless / typeless file", () => {
