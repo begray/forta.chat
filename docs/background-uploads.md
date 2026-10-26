@@ -135,7 +135,9 @@ JS contract (`start`/`update`/`stop`/events).
 
 ## 5. Upload log events
 `fgs:start {items, visible}`, `fgs:denied {error, visible}`, `fgs:stop {reason: done|idle|start-failed|system, n}`,
-`fgs:timeout {items}`, `fgs:cancel {items}`, `fgs:cancel-failed`, `fgs:notif {state, asked}`.
+`fgs:timeout {items}`, `fgs:cancel {items}`, `fgs:cancel-failed`, `fgs:notif {state, asked}`,
+`fgs:unavailable {reason, items}` (once, Android without the plugin: a log with sends and no
+`fgs:start` then says why).
 
 The log header names the build: `app: <versionName> (versionCode N, commit abcdef12)`. The commit
 comes from `VITE_BUILD_COMMIT` at `npm run build` time (e.g.

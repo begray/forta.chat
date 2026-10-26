@@ -295,4 +295,15 @@ describe("background transfer keep-alive", () => {
     expect(web.notificationPermission).not.toHaveBeenCalled();
     expect(events()).toEqual([]);
   });
+
+  it("says once when Android has no service to start (plugin missing)", async () => {
+    const missing = { ...makeFake(false), missingReason: () => "plugin-missing" } as unknown as Fake;
+    setBackgroundTransferDepsForTests(missing);
+    setTransferSource("engine", [{ id: "a", phase: "waiting" }]);
+    setTransferSource("engine", [{ id: "a", phase: "uploading", percent: 5 }]);
+    vi.advanceTimersByTime(START_DELAY_MS * 2);
+    await flush();
+    expect(events()).toEqual([expect.objectContaining({ e: "fgs:unavailable", d: { reason: "plugin-missing", items: 1 } })]);
+    setTransferSource("engine", []);
+  });
 });
