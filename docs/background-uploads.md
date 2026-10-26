@@ -136,3 +136,8 @@ JS contract (`start`/`update`/`stop`/events).
 ## 5. Upload log events
 `fgs:start {items, visible}`, `fgs:denied {error, visible}`, `fgs:stop {reason: done|idle|start-failed|system, n}`,
 `fgs:timeout {items}`, `fgs:cancel {items}`, `fgs:cancel-failed`, `fgs:notif {state, asked}`.
+
+The log header names the build: `app: <versionName> (versionCode N, commit abcdef12)`. The commit
+comes from `VITE_BUILD_COMMIT` at `npm run build` time (e.g.
+`VITE_BUILD_COMMIT=$(git rev-parse --short=8 HEAD) npm run build`); without it the header has
+the version name and versionCode only.

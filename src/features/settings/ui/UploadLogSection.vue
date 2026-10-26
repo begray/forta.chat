@@ -7,6 +7,7 @@ import {
   copyUploadLog,
   shareUploadLog,
 } from "@/shared/lib/upload-log";
+import { formatAppBuild, readAppBuild } from "@/shared/lib/upload-log/app-build";
 
 const props = defineProps<{ appVersion?: string }>();
 
@@ -19,7 +20,11 @@ const unsubscribe = onUploadLogChange(() => { eventCount.value = getUploadLog().
 onBeforeUnmount(unsubscribe);
 
 const busy = ref(false);
-const header = () => ({ app: props.appVersion || undefined, tor: torStore.mode });
+// The full build id (versionCode, commit): test builds share a version
+// name. Read up front, so Copy runs straight from the tap.
+const appBuild = ref<string | undefined>();
+void readAppBuild(props.appVersion || undefined).then((b) => { appBuild.value = formatAppBuild(b); });
+const header = () => ({ app: appBuild.value ?? (props.appVersion || undefined), tor: torStore.mode });
 
 const handleCopy = async () => {
   try {
