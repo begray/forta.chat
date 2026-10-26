@@ -27,8 +27,9 @@ import {
 export interface FileSource {
   /** "copy": our copy in the files dir; "uri": the provider's content://
    *  URI (big video, persisted grant); "staged": a cache copy made by the
-   *  web path before compressing. */
-  kind: "copy" | "uri" | "staged";
+   *  web path before compressing; "share": the share plugin's copy of an
+   *  item shared into the app (see share-send.ts). */
+  kind: "copy" | "uri" | "staged" | "share";
   /** file:// or content:// URI the bytes are read from (native side). */
   uri: string;
   durationMs?: number;

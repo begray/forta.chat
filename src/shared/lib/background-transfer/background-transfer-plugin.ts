@@ -65,3 +65,10 @@ export const BackgroundUpload = registerPlugin<BackgroundUploadNativePlugin>("Ba
 export function isBackgroundUploadAvailable(): boolean {
   return Capacitor.getPlatform() === "android" && Capacitor.isPluginAvailable("BackgroundUpload");
 }
+
+/** "plugin-missing" on Android without the native plugin; null elsewhere
+ *  (iOS and the web have no service by design). */
+export function backgroundUploadMissingReason(): string | null {
+  if (Capacitor.getPlatform() !== "android") return null;
+  return Capacitor.isPluginAvailable("BackgroundUpload") ? null : "plugin-missing";
+}

@@ -32,6 +32,7 @@ import { logUpload, describeError } from "@/shared/lib/upload-log/upload-log";
 import { tRaw } from "@/shared/lib/i18n";
 import {
   BackgroundUpload,
+  backgroundUploadMissingReason,
   isBackgroundUploadAvailable,
   type KeepAliveNotice,
   type KeepAliveStopReason,
@@ -59,6 +60,9 @@ export interface TransferHandlers {
 
 export interface BackgroundTransferDeps {
   available: () => boolean;
+  /** Why there is no service where one is expected (Android without the
+   *  plugin), or null; logged once as fgs:unavailable. */
+  missingReason?: () => string | null;
   start: (notice: KeepAliveNotice) => Promise<void>;
   update: (notice: KeepAliveNotice) => Promise<void>;
   stop: () => Promise<void>;
@@ -85,6 +89,7 @@ const NOTIF_ASKED_KEY = "forta.bg-upload.notif-asked.v1";
 
 const nativeDeps: BackgroundTransferDeps = {
   available: isBackgroundUploadAvailable,
+  missingReason: backgroundUploadMissingReason,
   start: (n) => BackgroundUpload.start(n),
   update: (n) => BackgroundUpload.update(n),
   stop: () => BackgroundUpload.stop(),
@@ -121,6 +126,7 @@ let updateTimer: ReturnType<typeof setTimeout> | null = null;
 let lastUpdateAt = 0;
 let lastNotice = "";
 let askedThisSession = false;
+let missingLogged = false;
 let wired = false;
 
 function wire(): void {
@@ -217,7 +223,10 @@ function recompute(): void {
   if (active.size > 0) {
     stopTimer = clearTimer(stopTimer);
     maybeAskNotifications(active);
-    if (!deps.available()) return;
+    if (!deps.available()) {
+      logMissingOnce(active.size);
+      return;
+    }
     if (running) {
       scheduleUpdate();
     } else if (!refused) {
@@ -244,6 +253,16 @@ function recompute(): void {
   } else {
     resetRun();
   }
+}
+
+/** A send with no keep-alive where there should be one: say so once, so a
+ *  log without fgs:start is not a mystery. */
+function logMissingOnce(items: number): void {
+  if (missingLogged) return;
+  const reason = deps.missingReason?.() ?? null;
+  if (!reason) return;
+  missingLogged = true;
+  logUpload("fgs:unavailable", null, { reason, items });
 }
 
 function resetRun(): void {
@@ -418,6 +437,7 @@ export function setBackgroundTransferDepsForTests(next: BackgroundTransferDeps |
   refused = false;
   lastUpdateAt = 0;
   askedThisSession = false;
+  missingLogged = false;
   wired = false;
   handlers = {};
   deps = next ?? nativeDeps;
